@@ -1,0 +1,26 @@
+# Local game installations and loader dependencies
+/Wurm Unlimited/
+/server/
+/tools/*
+!/tools/*.java
+!/tools/*.ps1
+!/tools/*.py
+
+# Generated files and local runtime state
+/build/
+/dist/
+/assets/serverpack/
+/assets/previews/
+/assets/manifest.json
+/assets/wurmrail-models.jar
+/mods/wurmrail/
+/wurmrail-backups/
+__pycache__/
+*.class
+*.jar
+*.zip
+*.log
+*.db
+*.map
+*.lck
+*.bak
