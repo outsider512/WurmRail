@@ -1,5 +1,15 @@
 # WurmRail release notes
 
+## 2.31.0
+
+- Survey custom timber trestles with a dioptra and range pole. The survey
+  reports where the deck intersects terrain, and GMs can build or remove
+  straight spans.
+- Configure the maximum grade with `trestleMaxGradientPercent`. The default
+  is 50%, or 20 dirt over a 4-metre cardinal tile.
+- Trains and players on foot follow the sloped deck between the ground
+  approaches. The server restores the saved grade on restart.
+
 ## 2.30.3
 
 - Restore **Build railway** on elevated bridge decks and **Railway track**

@@ -1,6 +1,6 @@
-# WurmRail 2.30.3
+# WurmRail 2.31.0
 
-[Download the bridge update](https://github.com/outsider512/WurmRail/releases/tag/v2.30.3). The 2.30.3 server works with the 2.30.2 client.
+[Download WurmRail 2.31.0](https://github.com/outsider512/WurmRail/releases/tag/v2.31.0).
 
 A steam railway for Wurm Unlimited: build tracks, couple passenger and cargo
 wagons, drive with friends, or run repeating station routes with signals and
@@ -16,6 +16,8 @@ release changes and [THIRD-PARTY.md](THIRD-PARTY.md) for dependency notices.
   seats per vehicle. The default maximum is eight vehicles per train.
 - Eight compass directions, straight and diagonal track, 45- and 90-degree
   bends, physical bidirectional junctions, and surface-to-cave railways.
+- [Custom railway trestles](TRESTLES.md) for trains and players on foot, with
+  surveyed deck heights and a configurable grade limit.
 - Manual power, stop, reverse and speed controls. Forward and reverse have the
   same acceleration and speed limit: 5 m/s by default.
 - Combined stations that drop off passengers and pick up waiting players.
@@ -56,12 +58,12 @@ modloaders are not bundled; use your own licensed game installation.
 
 | Archive | Contents | Use |
 | --- | --- | --- |
-| `WurmRail-2.30.3.zip` | Server mod, client support/model pack, both installers and guides | First installation or sharing the complete release |
-| `WurmRail-2.30.3-server.zip` | Server mod, server installer and guides | Server installation/update |
-| `WurmRail-2.30.3-client.zip` | Client support/model pack, client installer and guides | Installation on each player's PC |
+| `WurmRail-2.31.0.zip` | Server mod, client support/model pack, both installers and guides | First installation or sharing the complete release |
+| `WurmRail-2.31.0-server.zip` | Server mod, server installer and guides | Server installation/update |
+| `WurmRail-2.31.0-client.zip` | Client support/model pack, client installer and guides | Installation on each player's PC |
 
-Install the matching server and client updates to use bridge rails.
-Every player needs the client update for deck-conforming track models.
+Install the matching server and client updates for walkable trestles.
+Every player needs the client update for sloped deck models and on-foot movement.
 Fully close and restart Wurm after updating. Preserve a complete world backup
 before upgrading.
 
@@ -760,7 +762,7 @@ is accepted for compatibility, but new configurations use the freight key.
 (0.1–86,400 seconds; default 30). It changes harvest opportunities, not tree
 growth. Append it to a preserved configuration to override the default.
 The steam supply keys set fuel energy per kg, costs per completed action or
-litre actually pumped, buffer capacities and supply linking range (4�64m).
+litre actually pumped, buffer capacities and supply linking range (4–64m).
 Keep each buffer at least as large as a Drill/Yarder action cost; an impossible
 configuration pauses with `SUPPLY CONFIG` rather than producing unpaid output.
 Older preserved configuration files use the listed defaults for missing keys.
@@ -879,7 +881,7 @@ Native checks supplement a graphical multiplayer playtest; they do not open
 a live game window.
 
 To recheck the share archives and their checksum files, run
-`python tools/verify_release.py 2.30.3` from the source workspace.
+`python tools/verify_release.py 2.31.0` from the source workspace.
 
 Integrations use absolute compass directions (N=0 through NW=7).
 `RailNetwork.getJunctionAlignment`, `setJunctionAlignment`,

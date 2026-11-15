@@ -6,7 +6,7 @@ param(
     [string]$ClientDir = (Join-Path $PSScriptRoot 'Wurm Unlimited/WurmLauncher'),
     [string]$ClientModLoaderDir = (Join-Path $PSScriptRoot 'tools/clientloader'),
     [string]$Python = 'python',
-    [string]$Version = '2.30.3',
+    [string]$Version = '2.31.0',
     [switch]$UseExistingAssets
 )
 
@@ -109,6 +109,7 @@ Invoke-JavaTool $toolchain.Compiler ($targetArgs + @('-encoding', 'UTF-8', '-Xli
 $testClasspath = $classesDir + [IO.Path]::PathSeparator + $classpath
 Invoke-JavaTool $toolchain.Compiler ($targetArgs + @('-encoding', 'UTF-8', '-cp', $testClasspath, '-d', $testClassesDir, "@$testArgsFile"))
 Write-Host 'Running dependency-free rail-network tests.'
+Invoke-JavaTool $toolchain.Runtime @('-ea', '-cp', ($classesDir + [IO.Path]::PathSeparator + $testClassesDir), 'org.wurmrail.core.TrestleAlignmentSelfTest')
 Invoke-JavaTool $toolchain.Runtime @('-ea', '-cp', ($classesDir + [IO.Path]::PathSeparator + $testClassesDir), 'org.wurmrail.core.RailNetworkSelfTest')
 $compatRuntime = Join-Path $serverPath '../runtime/bin/java.exe'
 if (-not (Test-Path -LiteralPath $compatRuntime -PathType Leaf)) { $compatRuntime = $toolchain.Runtime }
@@ -225,7 +226,7 @@ try {
 }
 Write-Host "Native client mod startup and model import passed. Log: $clientLog"
 Copy-Item -LiteralPath (Join-Path $projectRoot 'mods/wurmrail.properties') -Destination (Join-Path $stagingDir 'mods/wurmrail.properties')
-foreach ($document in @('README.md', 'QUICKSTART.md', 'CHANGELOG.md', 'THIRD-PARTY.md', 'COAL-MAP-HANDOFF.md', 'Install-WurmRail.ps1','Install-WurmRailClient.ps1')) {
+foreach ($document in @('README.md', 'QUICKSTART.md', 'TRESTLES.md', 'CHANGELOG.md', 'THIRD-PARTY.md', 'COAL-MAP-HANDOFF.md', 'Install-WurmRail.ps1','Install-WurmRailClient.ps1')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $document) -Destination (Join-Path $stagingDir $document)
 }
 $distDir = Join-Path $projectRoot 'dist'
@@ -237,7 +238,7 @@ $releaseHash = (Get-FileHash -LiteralPath $releasePath -Algorithm SHA256).Hash.T
 $serverStaging = Join-Path $projectRoot 'build/server-package'
 Reset-BuildDirectory $serverStaging
 Copy-Item -LiteralPath (Join-Path $stagingDir 'mods') -Destination $serverStaging -Recurse
-foreach ($document in @('README.md', 'QUICKSTART.md', 'CHANGELOG.md', 'THIRD-PARTY.md', 'COAL-MAP-HANDOFF.md', 'Install-WurmRail.ps1')) {
+foreach ($document in @('README.md', 'QUICKSTART.md', 'TRESTLES.md', 'CHANGELOG.md', 'THIRD-PARTY.md', 'COAL-MAP-HANDOFF.md', 'Install-WurmRail.ps1')) {
     Copy-Item -LiteralPath (Join-Path $stagingDir $document) -Destination (Join-Path $serverStaging $document)
 }
 $serverReleasePath = Join-Path $distDir "WurmRail-$Version-server.zip"
@@ -251,7 +252,7 @@ $jarHash = (Get-FileHash -LiteralPath $standaloneJar -Algorithm SHA256).Hash.ToL
 $clientStaging = Join-Path $projectRoot 'build/client-package'
 Reset-BuildDirectory $clientStaging
 Copy-Item -LiteralPath (Join-Path $stagingDir 'client') -Destination $clientStaging -Recurse
-foreach ($document in @('README.md','QUICKSTART.md','CHANGELOG.md','THIRD-PARTY.md','COAL-MAP-HANDOFF.md','Install-WurmRailClient.ps1')) {
+foreach ($document in @('README.md','QUICKSTART.md','TRESTLES.md','CHANGELOG.md','THIRD-PARTY.md','COAL-MAP-HANDOFF.md','Install-WurmRailClient.ps1')) {
     Copy-Item -LiteralPath (Join-Path $stagingDir $document) -Destination (Join-Path $clientStaging $document)
 }
 $clientReleasePath = Join-Path $distDir "WurmRail-$Version-client.zip"

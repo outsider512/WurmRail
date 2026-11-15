@@ -44,12 +44,13 @@ public final class RailTrackTerrainHooks {
                 +" this.bounds=this.model.calculateBoundingBox();this.pickingBound=this.model.calculatePickingBox();"
                 +" if(this.pickingBound==null)this.pickingBound=new com.wurmonline.client.renderer.model.ModelDataBounds(this.bounds); }",data));
         CtClass scenery=pool.get("com.wurmonline.client.renderer.cell.StaticModelRenderable");
+        scenery.addMethod(CtNewMethod.make("protected boolean wurmRailUsesDeckMatrix() { return false; }",scenery));
         scenery.addMethod(CtNewMethod.make("public boolean wurmRailIsTrackModel() {"
-                +" return org.wurmrail.client.RailTrackTerrain.trackMask(this.getModelName()==null?null:this.getModelName().toString())>=0; }",scenery));
+                +" return !this.wurmRailUsesDeckMatrix() && org.wurmrail.client.RailTrackTerrain.trackMask(this.getModelName()==null?null:this.getModelName().toString())>=0; }",scenery));
         // Railway scenery takes its private copy inside the callback, where we
         // can avoid native clone() replacing the pristine URL-cache entry.
         scenery.getDeclaredMethod("wantNewModelCopy").insertBefore(
-                "{ if(this.wurmRailIsTrackModel())return false; }");
+                "{ if(this.wurmRailIsTrackModel()||this.wurmRailUsesDeckMatrix())return false; }");
         // The first ModelResourceWrapper listener receives the pristine cached
         // wrapper itself. Clone that callback too: deforming it would contaminate
         // every later instance of the same track shape on a different slope.
@@ -65,7 +66,8 @@ public final class RailTrackTerrainHooks {
         ground.addField(CtField.make("private boolean wurmRailTrackReady;",ground));
         ground.addMethod(CtNewMethod.make("public boolean wurmRailConformTrack(long now) {"
                 +" long bridge=this.item==null?-10L:this.item.getBridgeId();"
-                +" if(!this.wurmRailIsTrackModel()||this.getParent()!=null||(!this.isOnGround()&&bridge<=0L)||Math.abs(this.getScaleWithoutOffset()-1f)>.0001f||(this.getLayer()!=0&&this.getLayer()!=-1)){"
+                +" boolean trestle=this.item!=null&&this.item.getModelName().toString().startsWith(\"model.wurmrail.trestledeck.\");"
+                +" if(!this.wurmRailIsTrackModel()||this.getParent()!=null||(!this.isOnGround()&&bridge<=0L&&!trestle)||Math.abs(this.getScaleWithoutOffset()-1f)>.0001f||(this.getLayer()!=0&&this.getLayer()!=-1)){"
                 +" if(this.wurmRailTrackTerrain!=null)this.wurmRailTrackTerrain.restore();this.wurmRailTrackReady=false;this.wurmRailTrackTerrain=null;return false;}"
                 +" if(world==null||this.model==null)return false;"
                 // GroundItemCellRenderable builds its first matrix in its
@@ -74,7 +76,7 @@ public final class RailTrackTerrainHooks {
                 +" if(!this.model.wurmRailIsPrivateTerrainCopy()){this.wurmRailTrackReady=false;this.wurmRailTrackTerrain=null;return false;}"
                 +" if(this.wurmRailTrackTerrain==null)this.wurmRailTrackTerrain=new org.wurmrail.client.RailTrackTerrain();"
                 +" boolean changed=this.wurmRailTrackTerrain.update(world,this.model,this.item==null?null:this.item.getModelName().toString(),"
-                +" this.x,this.y,this.yaw,this.getScaleWithoutOffset(),this.getLayer(),bridge,now);"
+                +" this.x,this.y,this.yaw,this.getScaleWithoutOffset(),this.getLayer(),bridge,now,this.item.getH());"
                 +" if(changed){this.h=this.wurmRailTrackTerrain.getBase();this.wurmRailTrackReady=true;this.pitch=0f;this.roll=0f;this.setVolumeFromModel();}"
                 +" return changed; }",ground));
         ground.getDeclaredMethod("prepareRender").insertBefore(

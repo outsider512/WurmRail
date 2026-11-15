@@ -93,7 +93,7 @@ public final class RailwayTrainService {
         if (towards == null) throw new IllegalArgumentException("Connect another rail section before placing the locomotive here.");
         Node exit = network.nodes.get(towards);
         requireMarker(exit);
-        blocked = WurmRailWorld.validateEdge(target.tileX, target.tileY, target.layer, exit.tileX, exit.tileY, exit.layer);
+        blocked = departureProblem(target,exit);
         if (blocked != null) throw new IllegalArgumentException(blocked);
         double rotation = (Math.toDegrees(Math.atan2(exit.tileX - target.tileX,
                 target.tileY - exit.tileY)) + 360) % 360;
@@ -143,8 +143,7 @@ public final class RailwayTrainService {
         if (towards == null) throw new IllegalArgumentException("Add a connected rail section beside the locomotive first.");
         Node departure = network.nodes.get(towards);
         requireMarker(departure);
-        String blocked = WurmRailWorld.validateEdge(start.tileX, start.tileY, start.layer,
-                departure.tileX, departure.tileY, departure.layer);
+        String blocked = departureProblem(start,departure);
         if (blocked != null) throw new IllegalArgumentException(blocked);
         List<Pose> original = Collections.singletonList(physicalPose(engine));
         Train created = network.createTrain(nextTrainName(), ownerId,
@@ -313,7 +312,8 @@ public final class RailwayTrainService {
 
     private static void requireMarker(Node node) {
         Item marker = node == null ? null : Items.getItemOptional(node.markerId).orElse(null);
-        if (marker == null || marker.getTemplateId() != WurmRailWorld.trackTemplateId
+        if (marker == null || (marker.getTemplateId() != WurmRailWorld.trackTemplateId
+                && (node.trestle() == null || marker.getTemplateId() != WurmRailWorld.trestleDeckTemplateId))
                 || marker.getTileX() != node.tileX || marker.getTileY() != node.tileY
                 || marker.isOnSurface() != (node.layer == 0) || marker.getParentId() != NO_ID
                 || marker.getBridgeId()!=node.bridgeId
@@ -322,9 +322,12 @@ public final class RailwayTrainService {
     }
 
     private Node nodeAt(int x, int y, int layer) {
-        for (Node node : network.nodes.values())
-            if (node.tileX == x && node.tileY == y && node.layer == layer) return node;
-        return null;
+        return network.nodeAt(x,y,layer);
+    }
+
+    private String departureProblem(Node start,Node end) {
+        if (network.isElevatedEdge(start.name,end.name)) return null;
+        return WurmRailWorld.validateEdge(start.tileX,start.tileY,start.layer,end.tileX,end.tileY,end.layer);
     }
 
     private String nextTrainName() {

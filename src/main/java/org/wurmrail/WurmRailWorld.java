@@ -41,6 +41,8 @@ import org.gotti.wurmunlimited.modsupport.ItemTemplateBuilder;
 import org.gotti.wurmunlimited.modsupport.vehicles.ModVehicleBehaviour;
 import org.gotti.wurmunlimited.modsupport.vehicles.ModVehicleBehaviours;
 import org.gotti.wurmunlimited.modsupport.vehicles.VehicleFacade;
+import org.wurmrail.core.RailNetwork.Pose;
+import org.wurmrail.core.RailNetwork.ApproachSeam;
 
 /** Wurm-specific item, collision and passenger integration. Call on the server thread. */
 public final class WurmRailWorld {
@@ -48,6 +50,7 @@ public final class WurmRailWorld {
     public static int cartTemplateId;
     public static int trackTemplateId;
     public static int trackSectionTemplateId;
+    public static int trestleDeckTemplateId, trestleBentTemplateId;
     public static int stationTemplateId;
     /** Keep both persistent identifiers so existing worlds retain their physical station items. */
     public static int pickupTemplateId, dropoffTemplateId;
@@ -98,6 +101,9 @@ public final class WurmRailWorld {
                     .modelName("model.wurmrail.track.17.").difficulty(15.0f).decayTime(Long.MAX_VALUE)
                     .build().getTemplateId();
             RailModelRegistry.register(locomotiveTemplateId,cartTemplateId,trackTemplateId);
+            trestleDeckTemplateId = createTrestlePiece("deck", "trestle deck", "model.wurmrail.trestledeck.0.", marker);
+            trestleBentTemplateId = createTrestlePiece("bent", "timber bent", "model.wurmrail.trestlebent.1.", marker);
+            RailModelRegistry.registerTrestle(trestleDeckTemplateId,trestleBentTemplateId);
             RailModelRegistry.registerTrackSection(trackSectionTemplateId);
             pickupTemplateId=createPassengerPlatform("wurmrail.pickup.v1","rail station","model.wurmrail.platform.pickup.",marker);
             dropoffTemplateId=createPassengerPlatform("wurmrail.dropoff.v1","rail station","model.wurmrail.platform.pickup.",marker);
@@ -163,6 +169,33 @@ public final class WurmRailWorld {
             templatesCreated = true;
         } catch (com.wurmonline.server.items.NoSuchTemplateException e) {
             throw new IOException("Required vanilla wagon, cart or rail-marker model template is missing", e);
+        }
+    }
+
+    private static int createTrestlePiece(String part, String name, String model, ItemTemplate marker) throws IOException {
+        return new ItemTemplateBuilder("wurmrail.trestle."+part+".v1")
+                .name(name, name+"s", "Fixed timber railway infrastructure.")
+                .itemTypes(new short[]{ItemTypes.ITEM_TYPE_NOTAKE, ItemTypes.ITEM_TYPE_NOMOVE,
+                        ItemTypes.ITEM_TYPE_DECORATION, ItemTypes.ITEM_TYPE_WOOD, ItemTypes.ITEM_TYPE_HOVER})
+                .imageNumber(marker.getImageNumber()).behaviourType((short)1)
+                .dimensions(195, 400, 52).weightGrams(10000).material(ItemMaterials.MATERIAL_WOOD_BIRCH)
+                .modelName(model).difficulty(15f).decayTime(Long.MAX_VALUE).build().getTemplateId();
+    }
+
+    static Item placeTrestlePiece(int template, Creature builder, float x, float y, float z,
+                                  float rotation, int variant, int grade) throws Exception {
+        Item item = ItemFactory.createItem(template, 50f, builder.getName());
+        try {
+            item.setPosXYZRotation(x, y, z, rotation);
+            item.setAuxData((byte)variant);
+            item.setData1(grade);
+            item.setLastOwnerId(builder.getWurmId());
+            Zones.getZone((int)(x/4), (int)(y/4), true).addItem(item);
+            item.savePosition();
+            return item;
+        } catch(Exception failure) {
+            Items.destroyItem(item.getWurmId());
+            throw failure;
         }
     }
 
@@ -618,6 +651,77 @@ public final class WurmRailWorld {
 
     /** Move through Wurm's own zone and watcher code, then update every native passenger. */
     public static void moveCar(long itemId, double x, double y, double rotation, int layer) throws Exception {
+        moveCar(itemId, x, y, rotation, layer, Float.NaN, false, null);
+    }
+
+    static void moveCar(Pose pose, Pose previous) throws Exception {
+        moveCar(pose.carId, pose.x, pose.y, pose.rotation, pose.layer, pose.elevation,
+                previous != null && Float.isFinite(previous.elevation), approachSeam(pose,previous));
+    }
+
+    static void validateCarStep(Item car, Pose destination, Pose previous) throws Exception {
+        boolean elevatedSource = previous != null && Float.isFinite(previous.elevation);
+        validateCarStep(car, destination.x, destination.y, destination.layer, destination.elevation, elevatedSource,
+                approachSeam(destination,previous));
+    }
+
+    private static ApproachSeam approachSeam(Pose destination, Pose previous) {
+        return Float.isFinite(destination.elevation) ? destination.approachSeam
+                : previous == null ? null : previous.approachSeam;
+    }
+
+    private static void validateCarStep(Item car, double x, double y, int layer, float elevation,
+                                        boolean elevatedSource, ApproachSeam seam) throws Exception {
+        boolean elevatedDestination = Float.isFinite(elevation);
+        if (!elevatedSource && !elevatedDestination) {
+            validateSegment(car.getPosX(), car.getPosY(), car.isOnSurface() ? 0 : -1, x, y, layer);
+            return;
+        }
+        if (layer != 0 || !car.isOnSurface() || car.getBridgeId() != NO_ID)
+            throw new IllegalArgumentException("An elevated rail connection requires a surface approach.");
+        if (!elevatedDestination) requireValidPosition(x, y, layer);
+        double dx = x - car.getPosX(), dy = y - car.getPosY();
+        double distance = Math.hypot(dx, dy);
+        if (!Double.isFinite(distance) || distance > 16)
+            throw new IllegalArgumentException("An elevated rail movement step exceeds 16 metres.");
+        float fromX=car.getPosX(),fromY=car.getPosY(),fromZ=car.getPosZ();
+        float toZ = elevatedDestination ? elevation : groundHeight(x, y, 0);
+        // The two sides can have different slopes. A chord across their join
+        // can cut through the bank even when the railway follows its surface.
+        if (seam != null && elevatedSource != elevatedDestination && distance > 0) {
+            double t = ((seam.x-fromX)*dx+(seam.y-fromY)*dy)/(distance*distance);
+            if (t > 0 && t < 1 && Math.hypot(seam.x-fromX-dx*t,seam.y-fromY-dy*t) < .01) {
+                validateElevatedSegment(fromX,fromY,fromZ,seam.x,seam.y,seam.z);
+                validateElevatedSegment(seam.x,seam.y,seam.z,(float)x,(float)y,toZ);
+                return;
+            }
+        }
+        validateElevatedSegment(fromX,fromY,fromZ,(float)x,(float)y,toZ);
+    }
+
+    private static void validateElevatedSegment(float fromX,float fromY,float fromZ,float x,float y,float toZ) throws Exception {
+        double dx=x-fromX,dy=y-fromY;
+        double distance=Math.hypot(dx,dy);
+        int samples = Math.max(1, (int) Math.ceil(distance * 2));
+        for (int i = 0; i <= samples; i++) {
+            double t = (double) i / samples;
+            float px = (float) (fromX + dx * t), py = (float) (fromY + dy * t);
+            int tileX = (int) (px / 4), tileY = (int) (py / 4);
+            if (tileX < 1 || tileY < 1 || tileX >= Zones.worldTileSizeX - 2 || tileY >= Zones.worldTileSizeY - 2)
+                throw new IllegalArgumentException("Elevated railway is outside the playable map.");
+            VolaTile tile = Zones.getTileOrNull(tileX, tileY, true);
+            if (RailwayBridgeDeck.partAt(tileX, tileY, 0) != null || tile != null && tile.getStructure() != null)
+                throw new IllegalArgumentException("A structure conflicts with the elevated railway.");
+            if (fromZ + (toZ - fromZ) * t + 0.05 < Zones.calculateHeight(px, py, true))
+                throw new IllegalArgumentException("Terrain obstructs the elevated railway.");
+        }
+        if (distance > 0 && Blocking.getBlockerBetween(null, fromX, fromY, x, y,
+                fromZ + .4f, toZ + .4f, true, true, false, 4, -1L, NO_ID, NO_ID, false) != null)
+            throw new IllegalArgumentException("Elevated rail movement is blocked by a wall, fence or door.");
+    }
+
+    private static void moveCar(long itemId, double x, double y, double rotation, int layer,
+                                float elevation, boolean elevatedSource, ApproachSeam seam) throws Exception {
         Item item = Items.getItem(itemId);
         if (!isRailCar(item)) throw new IllegalArgumentException("Item is not a rail vehicle");
         if (item.getTopParent() != itemId || item.getOwnerId() != NO_ID)
@@ -627,7 +731,7 @@ public final class WurmRailWorld {
         boolean changedLayer=item.isOnSurface()!=(layer==0);
         if(changedLayer&&(float)x==item.getPosX()&&(float)y==item.getPosY())
             throw new IllegalArgumentException("A cave crossing must move the rail vehicle across the entrance at native coordinate precision");
-        validateSegment(item.getPosX(),item.getPosY(),item.isOnSurface()?0:-1,x,y,layer);
+        validateCarStep(item,x,y,layer,elevation,elevatedSource,seam);
         int sourceLayer=item.isOnSurface()?0:-1;
         if(!RailwayBridgeDeck.matches(item.getTileX(),item.getTileY(),sourceLayer,item.getBridgeId()))
             throw new IllegalStateException("The rail vehicle's bridge deck is missing or has changed.");
@@ -636,7 +740,8 @@ public final class WurmRailWorld {
         BridgePart deck=RailwayBridgeDeck.partAt((int)(x/4),(int)(y/4),layer);
         long bridgeId=deck==null?NO_ID:deck.getStructureId();
         boolean changedBridge=item.getBridgeId()!=bridgeId;
-        float z = railHeight(x,y,layer,deck);
+        float z = Float.isFinite(elevation) ? elevation : railHeight(x,y,layer,deck);
+        RailModelRegistry.setElevatedCar(itemId,Float.isFinite(elevation));
         float facing = (float)((rotation % 360.0 + 360.0) % 360.0);
         VolaTile oldTile = Zones.getOrCreateTile(item.getTileX(), item.getTileY(), item.isOnSurface());
         List<PortalObserver> portalObservers=changedLayer?preparePortalObservers(item,oldTile,(int)x/4,(int)y/4):new ArrayList<PortalObserver>();

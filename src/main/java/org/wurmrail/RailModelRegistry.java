@@ -3,6 +3,8 @@ package org.wurmrail;
 /** Primitive-only model lookup: safe for the loader to verify before game classes are patched. */
 public final class RailModelRegistry {
     private static volatile int locomotiveId, cartId, trackId, trackSectionId, pickupId, dropoffId, alignmentId, signalId;
+    private static volatile int trestleDeckId, trestleBentId;
+    private static final java.util.Set<Long> elevatedCars = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private RailModelRegistry() { }
 
     public static void register(int locomotive, int cart, int track) {
@@ -15,6 +17,13 @@ public final class RailModelRegistry {
     public static void registerPassengerPlatforms(int pickup,int dropoff) { pickupId=pickup; dropoffId=dropoff; }
     public static void registerJunctionAlignment(int alignment) { alignmentId=alignment; }
     public static void registerSignal(int signal) { signalId=signal; }
+    public static void registerTrestle(int deck, int bent) { trestleDeckId = deck; trestleBentId = bent; }
+    public static boolean isTrestle(int id) { return id != 0 && (id == trestleDeckId || id == trestleBentId); }
+    public static boolean isElevatedCar(long id) { return elevatedCars.contains(id); }
+    static void setElevatedCar(long id, boolean elevated) {
+        if (elevated) elevatedCars.add(id);
+        else elevatedCars.remove(id);
+    }
 
     public static boolean isRailVehicleModel(String model) {
         return "model.wurmrail.locomotive.".equals(model) || "model.wurmrail.cart.".equals(model)
@@ -23,10 +32,14 @@ public final class RailModelRegistry {
 
     public static boolean isCustomTemplate(int templateId) {
         return templateId != 0 && (SteamWaterPumpRegistry.isPump(templateId) || LogCarRegistry.isLogCar(templateId) || SteamYarderRegistry.isYarder(templateId) || LogBunkRegistry.isBunk(templateId) || IndustrialWaterTankRegistry.isIndustrialTank(templateId) || TankCarRegistry.isTankCar(templateId) || SteamRockDrillRegistry.isDrill(templateId) || BulkHopperRegistry.isHopper(templateId) || templateId == locomotiveId || templateId == cartId
-                || templateId == trackId || templateId == trackSectionId || templateId == pickupId || templateId == dropoffId || templateId == alignmentId || templateId == signalId);
+                || templateId == trackId || templateId == trackSectionId || templateId == pickupId || templateId == dropoffId || templateId == alignmentId || templateId == signalId || isTrestle(templateId));
     }
 
     public static String modelName(int templateId, byte connections, int kind) {
+        if (templateId == trestleDeckId && trestleDeckId != 0)
+            return "model.wurmrail.trestledeck."+(connections&3)+"."+kind+".";
+        if (templateId == trestleBentId && trestleBentId != 0)
+            return "model.wurmrail.trestlebent."+(connections&255)+".";
         if(SteamWaterPumpRegistry.isPump(templateId))return "model.wurmrail.steamwaterpump.";
         if(LogCarRegistry.isLogCar(templateId))return "model.wurmrail.logcar.";
         if(SteamYarderRegistry.isYarder(templateId))return "model.wurmrail.steamyarder.";

@@ -35,6 +35,8 @@ def main():
     expected.update("model.wurmrail.alignment."+str(mask) for mask in [0]+[sum(1<<i for i in pair) for pair in itertools.combinations(range(8),2)])
     expected.update(f"model.wurmrail.signal.{direction}.{aspect}" for direction in range(8) for aspect in ["red","green"])
     expected.update(f"model.wurmrail.{kind}.{i}" for kind in ["track","junction","station"] for i in range(256))
+    expected.update(f"model.wurmrail.trestledeck.{axis}" for axis in range(4))
+    expected.update(f"model.wurmrail.trestlebent.{height}" for height in [1,2,4,8,16,32])
     require(set(manifest["models"])==expected,"manifest must cover vehicles and all 256 masks for each track kind")
     with zipfile.ZipFile(pack) as z:
         maps={}
@@ -50,6 +52,10 @@ def main():
         for key,path in maps.items():
             raw=z.read(path); model=ET.fromstring(raw)
             record=manifest["models"][key]
+            if key.startswith('model.wurmrail.trestlebent.'):
+                height=int(key.rsplit('.',1)[1])
+                lo,hi=record['bounds']
+                require(abs(lo[1]+height)<.001 and abs(hi[1])<.001,'timber stages meet at their end elevations')
             if key=='model.wurmrail.steamwaterpump':
                 lo,hi=record['bounds']
                 require(-.001<=lo[1]<=.01 and 2.1<hi[1]<2.21,'the pump has grounded feet and an upright delivery pipe')

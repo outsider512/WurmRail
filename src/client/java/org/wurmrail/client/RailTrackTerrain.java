@@ -38,7 +38,13 @@ public final class RailTrackTerrain {
 
     public boolean update(World world,ModelResourceWrapper model,String name,
             float x,float y,float yaw,float scale,int layer,long bridgeId,long now) {
+        return update(world,model,name,x,y,yaw,scale,layer,bridgeId,now,Float.NaN);
+    }
+
+    public boolean update(World world,ModelResourceWrapper model,String name,
+            float x,float y,float yaw,float scale,int layer,long bridgeId,long now,float packetHeight) {
         int mask=trackMask(name);
+        boolean trestle=name!=null&&name.startsWith("model.wurmrail.trestledeck.");
         if(world==null||mask<0||model==null||!model.isLoaded()
                 ||!(model.getModelData() instanceof AbstractColladaModelData)
                 ||!Float.isFinite(x)||!Float.isFinite(y)||!Float.isFinite(yaw)
@@ -55,7 +61,8 @@ public final class RailTrackTerrain {
         // dropped portable sections, while placed railway pieces use yaw zero.
         double angle=Math.toRadians(-yaw),co=Math.cos(angle),si=Math.sin(angle);
         float wx=(float)(ax*co-ay*si),wy=(float)(ax*si+ay*co);
-        float[] profile=new float[deck==null?33:3];
+        boolean plane=deck!=null||trestle;
+        float[] profile=new float[plane?3:33];
         float gx=0,gz=0;
         if(deck!=null) {
             boolean northSouth=deck.getDir()==0||deck.getDir()==4;
@@ -64,6 +71,12 @@ public final class RailTrackTerrain {
             profile[0]=deck.getBridgeInterpolatedHeight(x,y);
             profile[1]=gx;
             profile[2]=gz;
+        } else if(trestle) {
+            if(!Float.isFinite(packetHeight))return false;
+            float grade=trestleGrade(name);
+            float length=(float)Math.hypot(ax,ay);
+            gx=grade*ax/length;gz=grade*ay/length;
+            profile[0]=packetHeight;profile[1]=gx;profile[2]=gz;
         } else {
             for(int i=0;i<profile.length;i++) {
                 if(axis<0&&i>0){profile[i]=profile[0];continue;}
@@ -72,12 +85,12 @@ public final class RailTrackTerrain {
                 if(!Float.isFinite(profile[i]))return false;
             }
         }
-        float center=deck==null?profile[16]:profile[0];
+        float center=plane?profile[0]:profile[16];
         if(same&&Arrays.equals(previous,profile))return false;
         AbstractColladaModelData data=(AbstractColladaModelData)model.getModelData();
         if(wrapper!=model) {meshes.clear();vertices.clear();normals.clear();previous=null;}
-        boolean uneven=deck!=null&&(gx!=0||gz!=0);
-        if(deck==null)for(float height:profile)if(Math.abs(height-center)>.00001f)uneven=true;
+        boolean uneven=plane&&(gx!=0||gz!=0);
+        if(!plane)for(float height:profile)if(Math.abs(height-center)>.00001f)uneven=true;
         // A flat tile needs no private vertex allocation. Once a tile has been
         // shaped, retain its originals so later terraforming cannot accumulate.
         if(uneven||!meshes.isEmpty()) {
@@ -96,13 +109,13 @@ public final class RailTrackTerrain {
                 for(int at=0;at<source.length;at+=3) {
                     float t=divisor==0?0:(source[at]*ax+source[at+2]*ay)/divisor;
                     float f=Math.max(0,Math.min(32,(t+2)*8));int index=Math.min(31,(int)f);float blend=f-index;
-                    float elevation=deck==null?profile[index]*(1-blend)+profile[index+1]*blend-center
+                    float elevation=!plane?profile[index]*(1-blend)+profile[index+1]*blend-center
                             :gx*source[at]+gz*source[at+2];
                     output.put(at,source[at]);output.put(at+1,source[at+1]+elevation);output.put(at+2,source[at+2]);
                     if(normal!=null&&outNormal!=null) {
-                        float slope=deck==null?(profile[index+1]-profile[index])*8:0;
-                        float slopeX=deck!=null?gx:divisor==0?0:slope*ax/divisor;
-                        float slopeZ=deck!=null?gz:divisor==0?0:slope*ay/divisor;
+                        float slope=!plane?(profile[index+1]-profile[index])*8:0;
+                        float slopeX=plane?gx:divisor==0?0:slope*ax/divisor;
+                        float slopeZ=plane?gz:divisor==0?0:slope*ay/divisor;
                         float nx=normal[at]-slopeX*normal[at+1],ny=normal[at+1],nz=normal[at+2]-slopeZ*normal[at+1];
                         float length=(float)Math.sqrt(nx*nx+ny*ny+nz*nz);
                         outNormal.put(at,nx/length);outNormal.put(at+1,ny/length);outNormal.put(at+2,nz/length);
@@ -154,6 +167,13 @@ public final class RailTrackTerrain {
 
     public static int trackMask(String name) {
         if(name==null)return -1;
+        String trestle="model.wurmrail.trestledeck.";
+        if(name.startsWith(trestle)) {
+            int index=trestle.length();
+            if(name.length()<=index || name.charAt(index)<'0' || name.charAt(index)>'3')return -1;
+            int axis=name.charAt(index)-'0';
+            return (1<<axis)|(1<<(axis+4));
+        }
         int start=name.startsWith("model.wurmrail.track.")?"model.wurmrail.track.".length():
                 name.startsWith("model.wurmrail.junction.")?"model.wurmrail.junction.".length():
                 name.startsWith("model.wurmrail.station.")?"model.wurmrail.station.".length():-1;
@@ -161,6 +181,14 @@ public final class RailTrackTerrain {
         if(start==end)return -1;int mask=0;
         for(int at=start;at<end;at++){char digit=name.charAt(at);if(digit<'0'||digit>'9')return -1;mask=mask*10+digit-'0';if(mask>255)return -1;}
         return mask;
+    }
+
+    private static float trestleGrade(String name) {
+        int start="model.wurmrail.trestledeck.".length()+2;
+        int end=name.indexOf('.',start);
+        if(end<=start)return 0;
+        try { return Math.max(-1,Math.min(1,Integer.parseInt(name.substring(start,end))/1000000f)); }
+        catch(NumberFormatException invalid) { return 0; }
     }
 
     private static int axis(int mask) {

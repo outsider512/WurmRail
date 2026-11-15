@@ -43,6 +43,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     private String builders = "*", operators = "*";
     private int maxCars = 8, maxNodes = 10000;
     private double speedLimit = 5.0;
+    private RailwayTrestleSurvey trestleSurvey;
     private long lastTick, lastSave;
     private String validationError;
     private boolean trackVisualsDirty;
@@ -238,9 +239,35 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
         steamRockDrillIntervalSeconds=number(p.getProperty("steamRockDrillIntervalSeconds","30"),.1,86400);
         steamSupplyConfig=SteamSupplyConfig.fromProperties(p);
         steamYarderIntervalSeconds=number(p.getProperty("steamYarderIntervalSeconds","30"),.1,86400);
+        trestleSurvey = new RailwayTrestleSurvey(new RailwayTrestleSurvey.Api() {
+            @Override public Node railAt(int x, int y) { return nodeAt(x, y, 0); }
+            @Override public Node rail(String name) { return network.nodes.get(name); }
+            @Override public boolean trackPresent(Node rail) { return trackMarkerPresent(rail); }
+            @Override public void build(Creature actor, RailwayTrestleSurvey.Plan plan) throws Exception {
+                buildStraightTrestle(actor, plan);
+            }
+            @Override public void submit(Creature actor, RailwayTrestleSurvey.Response response) {
+                queue(actor, () -> { requireBuilder(actor); response.apply(); });
+            }
+        }, integer(p.getProperty("trestleMaxTiles", "250"), 1, 500),
+                number(p.getProperty("trestleMaxGradientPercent", "50"), 0, 100) / 100,
+                integer(p.getProperty("trestleBentSpacingTiles", "3"), 1, 50));
     }
 
     @Override public void init() {
+        RailwayTrestleActions.register(new RailwayTrestleActions.Api() {
+            @Override public boolean canSurvey(Creature actor) {
+                return actor.getPower() >= 2 || allowed(builders, actor.getName());
+            }
+            @Override public boolean hasSurvey(Creature actor) { return trestleSurvey.hasSurvey(actor); }
+            @Override public void submit(Creature actor, RailwayTrestleActions.Operation operation, long tool,
+                                         int x, int y, long target) {
+                queue(actor, () -> {
+                    requireBuilder(actor);
+                    trestleSurvey.handle(actor, operation, tool, x, y, target);
+                });
+            }
+        });
         RailwayMenuActions.register(new RailwayMenuActions.Api() {
             @Override public boolean canBuild(Creature p) { return p.getPower()>=2||allowed(builders,p.getName()); }
             @Override public void openBuilder(Creature p,int x,int y,int z) {
@@ -326,6 +353,8 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 // Retain existing consists when a server lowers its new-coupling limit.
                 network.maxCars = Math.max(network.maxCars,t.carIds.size());
                 t.maxSpeed = Math.min(t.maxSpeed, speedLimit);
+                for (Pose pose : t.poses)
+                    RailModelRegistry.setElevatedCar(pose.carId,Float.isFinite(pose.elevation));
             }
             refreshTrackVisuals();
             try {
@@ -396,8 +425,9 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 }
                 for (Pose pose : entry.getValue()) {
                     Pose old=appliedPoses.get(pose.carId);
-                    if(old!=null&&old.x==pose.x&&old.y==pose.y&&old.rotation==pose.rotation&&old.layer==pose.layer) continue;
-                    WurmRailWorld.moveCar(pose.carId, pose.x, pose.y, pose.rotation, pose.layer);
+                    if(old!=null&&old.x==pose.x&&old.y==pose.y&&old.rotation==pose.rotation&&old.layer==pose.layer
+                            &&Float.compare(old.elevation,pose.elevation)==0) continue;
+                    WurmRailWorld.moveCar(pose,old);
                     appliedPoses.put(pose.carId,pose);
                 }
             }
@@ -410,12 +440,12 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
             for(Train t:network.trains.values()) {
                 network.stop(t.name);scheduledServices.record(t,false);t.status="Stopped after a world error; check server log";
             }
-            appliedPoses.clear();
             for(Checkpoint snapshot:checkpoints.values()) for(Pose pose:snapshot.poses) {
                 try {
-                    WurmRailWorld.moveCar(pose.carId,pose.x,pose.y,pose.rotation,pose.layer);
+                    WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId));
                     appliedPoses.put(pose.carId,pose);
                 } catch(Exception restoreError) {
+                    appliedPoses.remove(pose.carId);
                     LOG.log(Level.WARNING,"Could not restore rail vehicle "+pose.carId+"; its train remains stopped",restoreError);
                 }
             }
@@ -529,7 +559,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
             }
             @Override public void restore(List<Pose> poses) throws Exception {
                 for(Pose pose:poses) {
-                    WurmRailWorld.moveCar(pose.carId,pose.x,pose.y,pose.rotation,pose.layer);
+                    WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId));
                     appliedPoses.put(pose.carId,pose);
                 }
             }
@@ -607,6 +637,13 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
             tell(p,"Junction alignment: "+RailwayJunctionWorld.alignmentName(n.getAlignmentMask())
                     +(n.getAlignmentOwner()==null?"":" (locked by "+n.getAlignmentOwner()+")"));
             for(SignalSystem.Signal signal:network.signals().definitions())if(signal.rail.equals(n.name))tell(p,signalDescription(signal));
+            if(n.trestle()!=null)tell(p,"Trestle "+n.trestle()+" | "+n.timber().size()+" timber stages assigned to this tile.");
+            return;
+        }
+        if(cmd.equals("removetrestle")) {
+            require(a,2,"removetrestle NAME");
+            removeStraightTrestle(p,a[1]);
+            tell(p,"Removed trestle "+a[1]+".");
             return;
         }
         if (cmd.equals("track")) {
@@ -841,6 +878,8 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
 
     private void repairTrack(Creature p,Node n) throws Exception {
         requireBuildContext(p,n.tileX,n.tileY,n.layer);
+        if (n.trestle()!=null)
+            throw new IllegalArgumentException("Rebuild the trestle as a complete span.");
         if(!RailwayBridgeDeck.matches(n.tileX,n.tileY,n.layer,n.bridgeId))
             throw new IllegalArgumentException("The original rail surface is missing or has changed. Remove the old track before rebuilding.");
         Item previous=Items.getItemOptional(n.markerId).orElse(null);
@@ -1022,6 +1061,124 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     private void lay(Creature p,String name,int x,int y) throws Exception {
         lay(p,name,x,y,WurmRailWorld.resolveBuildLayer(x,y,layer(p)));
     }
+
+    private void buildStraightTrestle(Creature actor, RailwayTrestleSurvey.Plan plan) throws Exception {
+        if (actor.getPower() < 2) throw new IllegalArgumentException("Instant construction requires GM power 2.");
+        int deltaX = plan.end.x - plan.start.x, deltaY = plan.end.y - plan.start.y;
+        int steps = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+        if (steps < 2 || deltaX != 0 && deltaY != 0 && Math.abs(deltaX) != Math.abs(deltaY))
+            throw new IllegalArgumentException("Choose a straight compass alignment with at least one tile between approaches.");
+        int dx = Integer.signum(deltaX), dy = Integer.signum(deltaY);
+        int direction = RailNetwork.direction(dx,dy), axis = direction & 3;
+        int grade = (int)Math.round(plan.alignment.gradient * (direction < 4 ? 1 : -1) * 1000000);
+        if (network.nodes.size() + steps - 1 + (plan.start.rail == null ? 1 : 0)
+                + (plan.end.rail == null ? 1 : 0) > maxNodes)
+            throw new IllegalArgumentException("Track node limit reached.");
+        for (RailwayTrestleSurvey.Site endpoint : Arrays.asList(plan.start, plan.end)) {
+            if (Math.abs(endpoint.point.z-WurmRailWorld.groundHeight(endpoint.point.x,endpoint.point.y,0)) > .05)
+                throw new IllegalArgumentException("The end of a straight trestle must meet its ground approach.");
+        }
+        for (int index = 0; index <= steps; index++) {
+            int x=plan.start.x+index*dx,y=plan.start.y+index*dy;
+            VolaTile tile=Zones.getTileOrNull(x,y,true);
+            if(tile!=null) for(Item item:tile.getItems()) if(WurmRailWorld.isRailCar(item))
+                throw new IllegalArgumentException("Move parked rail vehicles clear of the surveyed crossing first.");
+            if(index>0 && dx!=0 && dy!=0) {
+                for (int[] side : new int[][]{{x-dx,y},{x,y-dy}}) {
+                    VolaTile adjacent=Zones.getTileOrNull(side[0],side[1],true);
+                    if(nodeAt(side[0],side[1],0)!=null || RailwayBridgeDeck.partAt(side[0],side[1],0)!=null
+                            || adjacent!=null && (adjacent.getStructure()!=null || adjacent.getFences().length!=0))
+                        throw new IllegalArgumentException("The diagonal deck overlaps existing infrastructure at "+side[0]+", "+side[1]+".");
+                }
+            }
+        }
+        double stride = plan.alignment.length / (steps - 1);
+        String prefix = "trestle_" + UUID.randomUUID().toString().replace("-","").substring(0,16);
+        List<String> rails = new ArrayList<>(), added = new ArrayList<>();
+        List<Item> pieces = new ArrayList<>();
+        Map<String,List<Long>> timber = new HashMap<>();
+        JunctionCheckpoint switches = network.checkpointJunctions();
+        boolean profiled = false;
+        try {
+            for (int i = 0; i <= steps; i++) {
+                int x = plan.start.x + dx*i, y = plan.start.y + dy*i;
+                Node node = nodeAt(x,y,0);
+                boolean endpoint = i == 0 || i == steps;
+                if (!endpoint && node != null) throw new IllegalArgumentException("Rail already exists at "+x+", "+y+".");
+                if (node == null) {
+                    node = network.addNode(prefix+"_"+i,x,y,0);
+                    added.add(node.name);
+                    Item item = endpoint ? WurmRailWorld.spawnTrackMarker(actor,node.worldX(),node.worldY(),0)
+                            : WurmRailWorld.placeTrestlePiece(WurmRailWorld.trestleDeckTemplateId,actor,
+                                    node.worldX(),node.worldY(),(float)plan.alignment.at(stride*(i-.5)).z,0,axis,grade);
+                    pieces.add(item);
+                    node.markerId = item.getWurmId();
+                }
+                if (i > 0) network.connect(rails.get(i-1),node.name);
+                rails.add(node.name);
+            }
+            for (double distance : plan.alignment.supportDistances(plan.spacing)) {
+                org.wurmrail.core.TrestleAlignment.Point point = plan.alignment.at(distance);
+                float top = (float)point.z-.11f, x = (float)point.x, y = (float)point.y;
+                float floor = Zones.calculateHeight(x,y,true);
+                int height = (int)Math.ceil(top-floor);
+                int ownerIndex = Math.min(steps-1,1+(int)(distance/stride));
+                String owner = rails.get(ownerIndex);
+                while (height > 0) {
+                    int size = Math.min(32,Integer.highestOneBit(height));
+                    Item bent = WurmRailWorld.placeTrestlePiece(WurmRailWorld.trestleBentTemplateId,actor,
+                            x,y,top,axis*45,size,0);
+                    pieces.add(bent);
+                    timber.computeIfAbsent(owner,key->new ArrayList<>()).add(bent.getWurmId());
+                    top -= size;
+                    height -= size;
+                }
+            }
+            network.setTrestleElevation(rails,plan.alignment);
+            profiled = true;
+            for (String name : added) network.assignTrestleNode(name,prefix);
+            for (Map.Entry<String,List<Long>> entry : timber.entrySet())
+                network.setTrestleTimber(entry.getKey(),entry.getValue());
+            network.save(stateFile);
+        } catch(Exception failure) {
+            try {
+                if (profiled) network.clearStraightElevation(rails);
+                for (int i = added.size()-1; i >= 0; i--) network.removeNode(added.get(i));
+                network.restoreJunctions(switches);
+                for (Item piece : pieces) Items.destroyItem(piece.getWurmId());
+            } catch(Exception rollback) { failure.addSuppressed(rollback); }
+            throw failure;
+        }
+        trackVisualsDirty = true;
+        refreshTrackVisuals();
+        tell(actor,"Trestle "+prefix+" | "+steps+" linked sections.");
+    }
+
+    private void removeStraightTrestle(Creature actor, String name) throws Exception {
+        if (actor.getPower() < 2) throw new IllegalArgumentException("Removing a trestle requires GM power 2.");
+        for (Node n : network.nodes.values()) if(name.equals(n.trestle())) {
+            VolaTile tile=Zones.getTileOrNull(n.tileX,n.tileY,true);
+            if(tile!=null) for(Item item:tile.getItems()) if(WurmRailWorld.isRailCar(item))
+                throw new IllegalArgumentException("Move parked rail vehicles clear of the trestle first.");
+            if(freightStops.get(n.name)!=null || waterUnloadStops.get(n.name)!=null)
+                throw new IllegalArgumentException("Remove the freight stop before removing this trestle.");
+            for(Platform platform:passengerStations.platforms.values()) if(n.name.equals(platform.rail))
+                throw new IllegalArgumentException("Remove the platform before removing this trestle.");
+        }
+        // Preserve the live graph and its callbacks if storage rejects the edit.
+        network.checkTrestleRemoval(name);
+        network.save(stateFile);
+        RailNetwork replacement = RailNetwork.load(stateFile);
+        replacement.removeTrestle(name);
+        replacement.save(stateFile);
+        List<Node> removed = network.removeTrestle(name);
+        for (Node n : removed) {
+            Items.destroyItem(n.markerId);
+            for (long timber : n.timber()) Items.destroyItem(timber);
+        }
+        trackVisualsDirty=true;
+        refreshTrackVisuals();
+    }
     private void lay(Creature p,String name,int x,int y,int trackLayer) throws Exception {
         checkName(name); if(network.nodes.size()>=maxNodes) throw new IllegalArgumentException("Track node limit reached.");
         validateBuildTile(p,x,y,trackLayer);
@@ -1184,7 +1341,9 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     }
     private void refreshTrackVisuals() {
         Set<Long> surfaceRails=new HashSet<Long>();
-        for(Node n:network.nodes.values())if(n.layer==0&&n.bridgeId==RailwayBridgeDeck.NONE)
+        for(Node n:network.nodes.values())if(n.layer==0&&n.bridgeId==RailwayBridgeDeck.NONE
+                && !(n.trestle()!=null
+                    && Items.getItemOptional(n.markerId).map(i->i.getTemplateId()==WurmRailWorld.trestleDeckTemplateId).orElse(true)))
             surfaceRails.add(RailVegetationHooks.tileKey(n.tileX,n.tileY));
         RailVegetationHooks.replaceSurfaceRails(surfaceRails);
         for(Node n:network.nodes.values()) {
@@ -1194,10 +1353,31 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
             Item track=Items.getItemOptional(n.markerId).orElse(null);
             if(track!=null&&track.getTemplateId()==WurmRailWorld.trackTemplateId)
                 WurmRailWorld.updateTrackVisual(track,trackMask(n),n.station?1:n.links.size()>=3?2:0);
+            else if(track!=null&&track.getTemplateId()==WurmRailWorld.trestleDeckTemplateId&&n.trestle()!=null)
+                restoreTrestleGrade(n,track);
         }
         trackVisualsDirty=false;
         refreshJunctionIndicators(true);
         refreshSignalVisuals(true);
+    }
+
+    private void restoreTrestleGrade(Node deck, Item marker) {
+        // Native ground-item reload can leave Data1 at -1 even with a grade
+        // saved in the item database. The network owns the actual deck profile.
+        for (String link : deck.links) {
+            double slope = network.elevatedGradient(deck.name,link);
+            if (!Double.isFinite(slope)) continue;
+            Node neighbor = network.nodes.get(link);
+            int direction = RailNetwork.direction(neighbor.tileX-deck.tileX,neighbor.tileY-deck.tileY);
+            byte axis = (byte)(direction & 3);
+            int grade = (int)Math.round(slope * (direction < 4 ? 1 : -1) * 1000000);
+            if (marker.getAuxData() != axis || marker.getData1() != grade) {
+                marker.setAuxData(axis);
+                marker.setData1(grade);
+                marker.updateIfGroundItem();
+            }
+            return;
+        }
     }
     private void refreshJunctionIndicators(boolean force) {
         long now=System.currentTimeMillis(),revision=network.getJunctionRevision();
@@ -1226,8 +1406,10 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 if(!WurmRailWorld.isRailCar(car)||car.getParentId()!=-10L||car.isBanked()||car.isMailed()||car.isTraded())
                     throw new IllegalArgumentException("Missing, stored, or traded rail vehicle.");
                 int x=(int)(pose.x/4),y=(int)(pose.y/4);
-                String error=WurmRailWorld.validateTile(x,y,pose.layer);
-                if(error!=null) throw new IllegalArgumentException(error);
+                if(!Float.isFinite(pose.elevation)) {
+                    String error=WurmRailWorld.validateTile(x,y,pose.layer);
+                    if(error!=null) throw new IllegalArgumentException(error);
+                }
                 // At diagonal tile corners floor(x/4),floor(y/4) may name
                 // an orthogonal side tile. The curve identifies its owning rail.
                 Node track=pose.railName==null?nodeAt(x,y,pose.layer):network.nodes.get(pose.railName);
@@ -1239,7 +1421,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 if(source!=null&&source.bridgeId!=RailwayBridgeDeck.NONE
                         &&!RailwayBridgeDeck.matches(source.tileX,source.tileY,source.layer,source.bridgeId))
                     throw new IllegalArgumentException("The rail vehicle's bridge deck is missing or has changed.");
-                WurmRailWorld.validateSegment(car.getPosX(),car.getPosY(),car.isOnSurface()?0:-1,pose.x,pose.y,pose.layer);
+                WurmRailWorld.validateCarStep(car,pose,applied);
                 for(int candidateLayer:new int[]{pose.layer,pose.layer==0?-1:0})for(int dx=-1;dx<=1;dx++) for(int dy=-1;dy<=1;dy++) {
                     VolaTile tile=Zones.getTileOrNull(x+dx,y+dy,candidateLayer==0);
                     if(tile==null) continue;
@@ -1282,7 +1464,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     private void applyPoses(Train t) throws Exception {
         checkTrainWorld(t);
         for(Pose pose:t.poses) {
-            WurmRailWorld.moveCar(pose.carId,pose.x,pose.y,pose.rotation,pose.layer);
+            WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId));
             appliedPoses.put(pose.carId,pose);
         }
     }
@@ -1416,7 +1598,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     private static double distance(double x,double y,double a,double b) { return Math.hypot(x-a,y-b); }
     private static int layer(Creature p) { return p.isOnSurface()?0:-1; }
     private Node node(String name) { Node n=network.nodes.get(name); if(n==null) throw new IllegalArgumentException("Unknown track node: "+name); return n; }
-    private Node nodeAt(int x,int y,int layer) { for(Node n:network.nodes.values()) if(n.tileX==x&&n.tileY==y&&n.layer==layer) return n; return null; }
+    private Node nodeAt(int x,int y,int layer) { return network.nodeAt(x,y,layer); }
     private Train findTrain(long car) { for(Train t:network.trains.values()) if(t.carIds.contains(car)) return t; return null; }
     private Train train(Creature p,String name) {
         Train t=name==null?findTrain(p.getVehicle()):network.trains.get(name);
@@ -1664,7 +1846,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
         tell(actor,"Direction reversed in manual driving. Power is off. Power on to back away; choose a station route to resume automatic service.");
     }
     private void restoreTrainPoses(List<Pose> poses) throws Exception {
-        for(Pose pose:poses) { WurmRailWorld.moveCar(pose.carId,pose.x,pose.y,pose.rotation,pose.layer); appliedPoses.put(pose.carId,pose); }
+        for(Pose pose:poses) { WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId)); appliedPoses.put(pose.carId,pose); }
     }
     private void commitTrainRoute(Train train,List<String> stops,boolean start) throws Exception {
         if(train.speed>0.001)throw new IllegalArgumentException("Press STOP before changing a moving train's route.");
@@ -1691,7 +1873,13 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     }
     private boolean trackMarkerPresent(Node rail) {
         Item marker=Items.getItemOptional(rail.markerId).orElse(null);
-        return marker!=null&&marker.getTemplateId()==WurmRailWorld.trackTemplateId&&marker.getParentId()==-10L&&marker.getOwnerId()==-10L
+        for (long id : rail.timber()) {
+            Item bent = Items.getItemOptional(id).orElse(null);
+            if (bent == null || bent.getTemplateId() != WurmRailWorld.trestleBentTemplateId
+                    || bent.getParentId() != -10L || !bent.isOnSurface() || bent.getDamage() >= 100) return false;
+        }
+        return marker!=null&&(marker.getTemplateId()==WurmRailWorld.trackTemplateId
+                ||marker.getTemplateId()==WurmRailWorld.trestleDeckTemplateId)&&marker.getParentId()==-10L&&marker.getOwnerId()==-10L
                 &&!marker.isBanked()&&!marker.isMailed()&&!marker.isTraded()&&marker.getTileX()==rail.tileX&&marker.getTileY()==rail.tileY
                 &&marker.isOnSurface()==(rail.layer==0)&&marker.getFloorLevel()==0&&marker.getBridgeId()==rail.bridgeId
                 &&RailwayBridgeDeck.matches(rail.tileX,rail.tileY,rail.layer,rail.bridgeId);

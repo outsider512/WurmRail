@@ -19,9 +19,20 @@ public final class RailModelHooks {
             // VolaTile marks deck vehicles as floor zero. The moving-item
             // spawn packet must still carry Z for clients joining mid-crossing.
             CtClass communicator = HookManager.getInstance().getClassPool().get("com.wurmonline.server.creatures.Communicator");
+            CtClass zone = HookManager.getInstance().getClassPool().get("com.wurmonline.server.zones.VirtualZone");
+            for (javassist.CtMethod method : zone.getDeclaredMethods("addItem")) {
+                if (method.getParameterTypes().length != 4) continue;
+                method.insertBefore("{ if (org.wurmrail.RailModelRegistry.isTrestle($1.getTemplateId())) $4=false; }");
+            }
             for (javassist.CtMethod method : communicator.getDeclaredMethods("sendNewMovingItem")) {
                 if (method.getParameterTypes().length != 15) continue;
-                method.insertBefore("{ if ($8 > 0L && org.wurmrail.RailModelRegistry.isRailVehicleModel($4)) $11 = false; }");
+                method.insertBefore("{ if (org.wurmrail.RailModelRegistry.isRailVehicleModel($4)"
+                        + " && ($8 > 0L || org.wurmrail.RailModelRegistry.isElevatedCar($1))) $11 = false; }");
+            }
+            CtClass queued = HookManager.getInstance().getClassPool().get("com.wurmonline.server.players.PlayerCommunicatorQueued");
+            for (javassist.CtMethod method : queued.getDeclaredMethods("sendNewMovingItem")) {
+                if (method.getParameterTypes().length != 14) continue;
+                method.insertBefore("{ if (org.wurmrail.RailModelRegistry.isElevatedCar($1)) $10 = false; }");
             }
             installed = true;
         } catch (Exception e) {

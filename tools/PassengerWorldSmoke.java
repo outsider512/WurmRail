@@ -157,7 +157,7 @@ public final class PassengerWorldSmoke {
     }
 
     @SuppressWarnings("unchecked")
-    private static Player player(long id,float x,float y) throws Exception {
+    static Player player(long id,float x,float y) throws Exception {
         id=id&~255L;
         Player player=(Player)allocate(Player.class);
         Creature base=UsabilitySmoke.actor(id,x,y);
@@ -208,7 +208,7 @@ public final class PassengerWorldSmoke {
     }
 
     @SuppressWarnings("unchecked")
-    private static void removePlayer(Player player) throws Exception {
+    static void removePlayer(Player player) throws Exception {
         Field byId=Players.class.getDeclaredField("playersById"); byId.setAccessible(true);
         ((Map<Long,Player>)byId.get(null)).remove(player.getWurmId());
         Field byName=Players.class.getDeclaredField("players"); byName.setAccessible(true);

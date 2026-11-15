@@ -17,6 +17,363 @@ import org.wurmrail.WurmRailWorld;
 public final class RailwayUiSmoke {
     private RailwayUiSmoke() { }
 
+    private static String surveyBml;
+    private static String surveyMessage;
+
+    public static void captureSurveyMessage(String message) { surveyMessage = message; }
+
+    public static void captureSurveyBml(String bml, String title) {
+        if ("Railway trestle survey".equals(title)) surveyBml = bml;
+    }
+
+    public static void runElevatedMotion() throws Exception {
+        int x = 160, y = 95, count = 14;
+        org.wurmrail.core.RailNetwork network = new org.wurmrail.core.RailNetwork();
+        java.util.List<String> span = new java.util.ArrayList<>();
+        java.util.List<Item> items = new java.util.ArrayList<>();
+        com.wurmonline.mesh.MeshIO surface = com.wurmonline.server.Server.surfaceMesh;
+        int[][] original = new int[count + 2][2];
+        for (int col = 0; col < original.length; col++) for (int row = 0; row < 2; row++) {
+            original[col][row] = surface.getTile(x + col, y + row);
+            surface.setTile(x + col, y + row, com.wurmonline.mesh.Tiles.encode(
+                    (short)50, com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id, (byte)0));
+        }
+        try {
+            for (int i = 0; i < count; i++) {
+                org.wurmrail.core.RailNetwork.Node node = network.addNode("T" + i, x + i, y, 0);
+                Item marker = WurmRailWorld.spawnTrackMarker(null, node.worldX(), node.worldY(), 0);
+                items.add(marker);
+                node.markerId = marker.getWurmId();
+                if (i > 0) network.connect("T" + (i - 1), node.name);
+                if (i >= 2 && i <= 10) span.add(node.name);
+            }
+            for (int col = 4; col <= 9; col++) for (int row = 0; row < 2; row++)
+                surface.setTile(x + col, y + row, com.wurmonline.mesh.Tiles.encode(
+                        (short)-160, com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id, (byte)0));
+            double worldY = y * 4 + 2;
+            org.wurmrail.core.TrestleAlignment alignment = org.wurmrail.core.TrestleAlignment.straight(
+                    new org.wurmrail.core.TrestleAlignment.Point((x + 2) * 4 + 2, worldY, 5),
+                    new org.wurmrail.core.TrestleAlignment.Point((x + 10) * 4 + 2, worldY, 5), 100, .05);
+            network.setStraightElevation(span, alignment);
+            Item engine = WurmRailWorld.spawnLocomotive(null, (x + 2) * 4 + 2, worldY, 0);
+            Item cart = WurmRailWorld.spawnCart(null, (x + 1) * 4 + 2, worldY, 0);
+            Item logs = WurmRailWorld.spawnLogCar(null, x * 4 + 2, worldY, 0);
+            items.add(engine);
+            items.add(cart);
+            items.add(logs);
+            org.wurmrail.core.RailNetwork.Train train = network.createTrain("Elevated", 1L,
+                    java.util.Arrays.asList(engine.getWurmId(), cart.getWurmId(), logs.getWurmId()), "T2", "T3");
+            org.wurmrail.WurmRailRuntime runtime = new org.wurmrail.WurmRailRuntime();
+            Field graph = runtime.getClass().getDeclaredField("network");
+            graph.setAccessible(true);
+            graph.set(runtime, network);
+            java.lang.reflect.Method place = runtime.getClass().getDeclaredMethod("restoreTrainPoses", List.class);
+            place.setAccessible(true);
+            java.lang.reflect.Method validate = runtime.getClass().getDeclaredMethod("validateMotion", List.class);
+            validate.setAccessible(true);
+            for (int direction : new int[]{1, -1}) {
+                if (direction < 0) network.reverse(train.name);
+                network.start(train.name);
+                for (int step = 0; step < 180; step++) {
+                    network.tick(.1);
+                    check((Boolean) validate.invoke(runtime, train.poses), "native guard accepts surveyed elevation");
+                    place.invoke(runtime, train.poses);
+                    check(Math.abs(engine.getPosZ() - 5) < .001 && Math.abs(cart.getPosZ() - 5) < .001
+                            && Math.abs(logs.getPosZ() - 5) < .001, "every native car remains at rail elevation");
+                }
+                network.stop(train.name);
+                check(direction > 0 ? logs.getTileX() >= x + 10 : engine.getTileX() <= x + 2,
+                        "coupled consist clears the span in both directions");
+            }
+        } finally {
+            for (Item item : items) com.wurmonline.server.Items.destroyItem(item.getWurmId());
+            for (int col = 0; col < original.length; col++) for (int row = 0; row < 2; row++)
+                surface.setTile(x + col, y + row, original[col][row]);
+        }
+        System.out.println("PASS native straight elevated movement, three-car consist, terrain-independent height and both approach seams");
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void runTrestleSurvey() throws Exception {
+        org.wurmrail.WurmRailRuntime runtime = new org.wurmrail.WurmRailRuntime();
+        runtime.configure(new java.util.Properties());
+        org.wurmrail.core.RailNetwork network = new org.wurmrail.core.RailNetwork();
+        Field graph = runtime.getClass().getDeclaredField("network");
+        graph.setAccessible(true);
+        graph.set(runtime, network);
+        Field ready = runtime.getClass().getDeclaredField("ready");
+        ready.setAccessible(true);
+        ready.set(runtime, true);
+        Field queue = runtime.getClass().getDeclaredField("requests");
+        queue.setAccessible(true);
+        java.util.Queue<Runnable> requests = (java.util.Queue<Runnable>) queue.get(runtime);
+        int first = ModActions.getNextActionId();
+        runtime.init();
+        short start = (short) first, mark = (short) (first + 1), review = (short) (first + 2);
+        com.wurmonline.server.players.Player actor = PassengerWorldSmoke.player(714002032L,202,202);
+        Field possessions=Creature.class.getDeclaredField("possessions");
+        possessions.setAccessible(true);
+        possessions.set(actor,new com.wurmonline.server.items.Possessions(actor));
+        int surface = com.wurmonline.server.Server.surfaceMesh.getTile(50, 50);
+        Item dioptra = com.wurmonline.server.items.ItemFactory.createItem(
+                com.wurmonline.server.items.ItemList.dioptra, 50f, "Trestle fixture");
+        check(actor.getInventory().insertItem(dioptra, true), "stock dioptra is held");
+        Item pole = com.wurmonline.server.items.ItemFactory.createItem(
+                com.wurmonline.server.items.ItemList.rangePole, 50f, 222, 202, 0, true, (byte)0, -10L, "Trestle fixture");
+        try {
+            BehaviourProvider startMenu = (BehaviourProvider) performer(start);
+            check(!has(startMenu.getBehavioursFor(actor, 50, 50, true, surface), start),
+                    "survey requires an active dioptra");
+            check(has(startMenu.getBehavioursFor(actor, dioptra, 50, 50, true, surface), start),
+                    "held dioptra offers native terrain survey");
+            long ground=com.wurmonline.mesh.Tiles.getTileId(50,50,0);
+            dispatchSurvey(actor, null, ground, start);
+            check(requests.isEmpty() && surveyMessage!=null && surveyMessage.contains("Activate a dioptra"),
+                    "native stale click without the active tool returns a useful message");
+            dispatchSurvey(actor, dioptra, ground, start);
+            check(requests.size() == 1, "native terrain dispatch must preserve the active dioptra, action "
+                    +start+", feedback "+surveyMessage);
+            requests.remove().run();
+            check(surveyMessage!=null && surveyMessage.contains("Trestle survey started"),
+                    "native survey sends confirmation even if the question window is missed");
+            com.wurmonline.server.questions.Question firstWindow = latestQuestion(actor);
+            check("Railway trestle survey".equals(firstWindow.getTitle()), "start opens survey question");
+            check(!has(((BehaviourProvider) performer(mark)).getBehavioursFor(actor, dioptra, pole), mark),
+                    "distant range pole is not selectable");
+            actor.getStatus().setPositionXYZ(222, 202, 5);
+            check(has(((BehaviourProvider) performer(mark)).getBehavioursFor(actor, dioptra, pole), mark),
+                    "same player can mark the installed range pole");
+            dispatchSurvey(actor, dioptra, pole.getWurmId(), mark);
+            check(requests.size() == 1, "native range-pole dispatch must preserve the active dioptra");
+            requests.remove().run();
+            com.wurmonline.server.questions.Question marked = latestQuestion(actor);
+            check(marked.getId() > firstWindow.getId(), "destination opens an updated survey");
+            check(surveyBml != null && surveyBml.contains("Survey clear") && surveyBml.contains("proposed bents"),
+                    "valid survey previews its proposed bents");
+            java.util.Properties edit = new java.util.Properties();
+            edit.setProperty("preview", "true");
+            edit.setProperty("start", "5");
+            edit.setProperty("end", "15.1");
+            marked.answer(edit);
+            marked.answer(edit);
+            check(requests.size() == 1, "survey answer is single use");
+            requests.remove().run();
+            check(surveyBml != null && surveyBml.contains("proposed gradient exceeds 50.0%"),
+                    "native preview rejects a route one dirt above the default rise limit");
+            java.util.Properties cancel = new java.util.Properties();
+            cancel.setProperty("cancel", "true");
+            latestQuestion(actor).answer(cancel);
+            requests.remove().run();
+            check(!has(((BehaviourProvider) performer(review)).getBehavioursFor(actor, dioptra, 55, 50, true, surface), review),
+                    "cancellation removes the player's draft");
+            check(network.nodes.isEmpty(), "survey leaves the rail network untouched");
+            Field state = runtime.getClass().getDeclaredField("stateFile");
+            state.setAccessible(true);
+            java.nio.file.Path file = java.nio.file.Paths.get("trestle-test","network.properties");
+            state.set(runtime,file);
+            com.wurmonline.mesh.MeshIO mesh = com.wurmonline.server.Server.surfaceMesh;
+            int[][] original = new int[7][2];
+            int startTile=70, surveyRow=72;
+            for (int col = 0; col < original.length; col++) for (int row = 0; row < 2; row++) {
+                original[col][row] = mesh.getTile(startTile+col,surveyRow+row);
+                int dirtHeight = col < 2 ? 131 : col < 5 ? -80 : 51;
+                mesh.setTile(startTile+col,surveyRow+row,com.wurmonline.mesh.Tiles.encode(
+                        (short)dirtHeight,com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id,(byte)0));
+            }
+            Item buildPole=com.wurmonline.server.items.ItemFactory.createItem(
+                    com.wurmonline.server.items.ItemList.rangePole,50f,(startTile+5)*4+2,surveyRow*4+2,
+                    0,true,(byte)0,-10L,"Trestle construction fixture");
+            try {
+                actor.getStatus().setPositionXYZ(startTile*4+2,surveyRow*4+2,13.1f);
+                org.wurmrail.core.RailNetwork.Node approach=network.addNode("SurveyApproach",startTile,surveyRow,0);
+                Item approachItem=WurmRailWorld.spawnTrackMarker(actor,startTile*4+2,surveyRow*4+2,0);
+                approach.markerId=approachItem.getWurmId();
+                dispatchSurvey(actor,dioptra,approachItem.getWurmId(),start);
+                check(requests.size()==1,"native track-item dispatch must preserve the active dioptra");
+                requests.remove().run();
+                actor.getStatus().setPositionXYZ((startTile+5)*4+2,surveyRow*4+2,5.1f);
+                dispatchSurvey(actor,dioptra,buildPole.getWurmId(),mark);
+                requests.remove().run();
+                check(surveyBml.contains("-50.00%") && surveyBml.contains("GM build straight trestle"),
+                        "exactly 50% downhill from a flat approach presents GM build");
+                int[][] obstruction = new int[2][2];
+                java.util.Properties preview = new java.util.Properties();
+                preview.setProperty("preview","true");
+                for(int col=0;col<2;col++) for(int row=0;row<2;row++) {
+                    obstruction[col][row]=mesh.getTile(startTile+3+col,surveyRow+row);
+                    mesh.setTile(startTile+3+col,surveyRow+row,com.wurmonline.mesh.Tiles.encode(
+                            (short)180,com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id,(byte)0));
+                }
+                latestQuestion(actor).answer(preview);
+                requests.remove().run();
+                check(surveyBml.contains("above the planned rail") && !surveyBml.contains("GM build straight trestle"),
+                        "a real obstruction on the deck reports its height and blocks construction");
+                for(int col=0;col<2;col++) for(int row=0;row<2;row++)
+                    mesh.setTile(startTile+3+col,surveyRow+row,obstruction[col][row]);
+                latestQuestion(actor).answer(preview);
+                requests.remove().run();
+                java.util.Properties build = new java.util.Properties();
+                build.setProperty("instant","true");
+                latestQuestion(actor).answer(build);
+                requests.remove().run();
+                check(network.nodes.size()==6,"GM survey action creates the whole linked span");
+                org.wurmrail.core.RailNetwork loaded=org.wurmrail.core.RailNetwork.load(file);
+                check(loaded.nodes.size()==6 && loaded.nodeAt(startTile+2,surveyRow,0).links.size()==2,"built span survives core reload");
+                org.wurmrail.core.RailNetwork.Train savedApproach = loaded.createTrain("ReloadApproach",actor.getWurmId(),
+                        java.util.Collections.singletonList(441L),approach.name,loaded.nodeAt(startTile+1,surveyRow,0).name);
+                loaded.start(savedApproach.name);
+                loaded.tick(.1);
+                org.wurmrail.core.RailNetwork.Pose approachPose=savedApproach.poses.get(0);
+                check(Float.isNaN(approachPose.elevation) && approachPose.approachSeam!=null
+                        && approachPose.approachSeam.x==(startTile+1)*4 && Math.abs(approachPose.approachSeam.z-13.1)<.001,
+                        "restart preserves the ground half of the approach and its deck seam");
+                Item deck=com.wurmonline.server.Items.getItem(loaded.nodeAt(startTile+2,surveyRow,0).markerId);
+                check(deck.getTemplateId()==WurmRailWorld.trestleDeckTemplateId && Math.abs(deck.getPosZ()-10.1)<.001,
+                        "deck uses surveyed absolute height over the valley");
+                check("model.wurmrail.trestledeck.2.-500000.".equals(deck.getModelName()),"deck advertises axis and 50% grade");
+                checkWalking(actor, startTile, surveyRow);
+                check(loaded.nodes.values().stream().anyMatch(node->!node.timber().isEmpty()),
+                        "timber is linked in the authoritative save");
+                Item reloaded=new com.wurmonline.server.items.DbItem(deck.getWurmId());
+                check(Math.abs(reloaded.getPosZ()-deck.getPosZ())<.001,"absolute height survives native item reload");
+                Item firstDeck=com.wurmonline.server.Items.getItem(loaded.nodeAt(startTile+1,surveyRow,0).markerId);
+                firstDeck.setData1(-1);
+                deck.setData1(-1);
+                Field networkField=runtime.getClass().getDeclaredField("network");
+                networkField.setAccessible(true);
+                networkField.set(runtime,loaded);
+                try {
+                    java.lang.reflect.Method refresh=runtime.getClass().getDeclaredMethod("refreshTrackVisuals");
+                    refresh.setAccessible(true);
+                    refresh.invoke(runtime);
+                    check("model.wurmrail.trestledeck.2.-500000.".equals(firstDeck.getModelName())
+                                    && "model.wurmrail.trestledeck.2.-500000.".equals(deck.getModelName()),
+                            "startup restores deck packet grades from the saved half-edge and full-edge profiles");
+                } finally {
+                    networkField.set(runtime,network);
+                }
+                String span=loaded.nodeAt(startTile+2,surveyRow,0).trestle();
+                long timber=loaded.nodes.values().stream().flatMap(node->node.timber().stream()).findFirst().get();
+                Item engine=WurmRailWorld.spawnLocomotive(actor,startTile*4+2,surveyRow*4+2,0);
+                try {
+                    WurmRailWorld.moveCar(engine.getWurmId(),engine.getPosX(),engine.getPosY(),90,0);
+                    java.lang.reflect.Method init=runtime.getClass().getDeclaredMethod("initService");
+                    init.setAccessible(true);
+                    init.invoke(runtime);
+                    Field service=runtime.getClass().getDeclaredField("trainService");
+                    service.setAccessible(true);
+                    Object trainService=service.get(runtime);
+                    java.lang.reflect.Method register=trainService.getClass().getDeclaredMethod("register",Item.class,long.class);
+                    register.setAccessible(true);
+                    org.wurmrail.core.RailNetwork.Train train=(org.wurmrail.core.RailNetwork.Train)
+                            register.invoke(trainService,engine,actor.getWurmId());
+                    check(network.trains.get(train.name)==train,"loco registration accepts the completed trestle departure");
+                    java.lang.reflect.Method apply=runtime.getClass().getDeclaredMethod("applyPoses",train.getClass());
+                    apply.setAccessible(true);
+                    network.start(train.name);
+                    boolean crossedValley=false;
+                    for(int tick=0;tick<100;tick++) {
+                        network.tick(.1);
+                        apply.invoke(runtime,train);
+                        if(engine.getTileX()==startTile+2) {
+                            crossedValley=true;
+                            double expectedHeight=13.1-(engine.getPosX()-((startTile+1)*4))*0.5;
+                            check(Math.abs(engine.getPosZ()-expectedHeight)<.001,"locomotive follows the built 50% grade above the valley");
+                        }
+                    }
+                    check(crossedValley && engine.getTileX()==startTile+5,"locomotive reaches the far approach on the built span");
+                    network.stop(train.name);
+                    network.reverse(train.name);
+                    network.start(train.name);
+                    for(int tick=0;tick<100;tick++) {
+                        network.tick(.1);
+                        apply.invoke(runtime,train);
+                    }
+                    check(engine.getTileX()==startTile && Math.abs(engine.getPosZ()-13.1)<.001,
+                            "locomotive returns uphill across the join to the flat starting tile");
+                    network.stop(train.name);
+                    network.removeTrain(train.name);
+                } finally {
+                    com.wurmonline.server.Items.destroyItem(engine.getWurmId());
+                }
+                java.lang.reflect.Method remove=runtime.getClass().getDeclaredMethod("removeStraightTrestle",Creature.class,String.class);
+                remove.setAccessible(true);
+                remove.invoke(runtime,actor,span);
+                check(network.nodes.size()==1 && network.nodes.get(approach.name)==approach && approach.links.isEmpty()
+                        && org.wurmrail.core.RailNetwork.load(file).nodes.size()==1,
+                        "GM removal clears the live and persisted span and preserves its preexisting approach");
+                check(!com.wurmonline.server.Items.getItemOptional(deck.getWurmId()).isPresent()
+                        && !com.wurmonline.server.Items.getItemOptional(timber).isPresent(), "GM removal clears deck and timber");
+            } finally {
+                com.wurmonline.server.Items.destroyItem(buildPole.getWurmId());
+                for (org.wurmrail.core.RailNetwork.Node node:network.nodes.values()) {
+                    com.wurmonline.server.Items.destroyItem(node.markerId);
+                    for (long timber:node.timber()) com.wurmonline.server.Items.destroyItem(timber);
+                }
+                for (int col = 0; col < original.length; col++) for (int row = 0; row < 2; row++)
+                    mesh.setTile(startTile+col,surveyRow+row,original[col][row]);
+            }
+        } finally {
+            com.wurmonline.server.Items.destroyItem(pole.getWurmId());
+            com.wurmonline.server.Items.destroyItem(dioptra.getWurmId());
+            PassengerWorldSmoke.removePlayer(actor);
+        }
+        System.out.println("PASS native trestle survey, 50% grade boundary, GM construction, locomotive crossing and saved deck and timber");
+    }
+
+    private static void checkWalking(Creature actor, int startTile, int row) throws Exception {
+        com.wurmonline.shared.util.MovementChecker movement = actor.getMovementScheme();
+        float start = startTile * 4 + 2, end = start + 20, y = row * 4 + 2;
+        float seam = start + 2;
+        float midpoint = start + 10;
+        float surface = org.wurmrail.TrestleWalkingWorld.height(midpoint, y, 9.1f);
+        check(Math.abs(surface - 9.1f) < .001f, "the installed deck supplies its saved walking height (" + surface + ")");
+        check(Float.isNaN(org.wurmrail.TrestleWalkingWorld.height(midpoint, y, -8f)),
+                "the elevated deck is unreachable from the valley floor");
+        check(Float.isNaN(org.wurmrail.TrestleWalkingWorld.height(midpoint, y + 1.1f, 10f)),
+                "the ground beside the deck retains its own height");
+        movement.setPosition(start, y, 13.1f, 90, 0);
+        boolean wasStarted = movement.started;
+        movement.started = true;
+        for (int direction : new int[]{90, 270}) {
+            boolean crossedDeck = false;
+            for (int tick = 0; tick < 900; tick++) {
+                movement.movestep(0.4f, movement.getX(), movement.getZ(), movement.getY(),
+                        -2500f, 2500f, direction, (byte)1, 0);
+                float x = movement.getX();
+                if (x >= seam && x <= end - 2) {
+                    crossedDeck = true;
+                    check(Math.abs(movement.getZ() - (13.1f - (x - seam) * .5f)) < .005f,
+                            "native walker follows the timber deck over the valley (x=" + x
+                                    + ", y=" + movement.getY() + ", z=" + movement.getZ()
+                                    + ", heading=" + direction + ")");
+                }
+                if (direction == 90 && x >= end || direction == 270 && x <= start) break;
+            }
+            float target = direction == 90 ? end : start;
+            check(crossedDeck && Math.abs(movement.getX() - target) < .4f
+                            && Math.abs(movement.getZ() - (direction == 90 ? 5.1f : 13.1f)) < .3f,
+                    "native walking crosses both joins and reaches the ground approach, heading " + direction
+                            + " (x=" + movement.getX() + ", z=" + movement.getZ() + ")");
+        }
+        movement.started = wasStarted;
+        actor.getStatus().setPositionXYZ(midpoint, y, 9.1f);
+        java.lang.reflect.Method level = com.wurmonline.server.zones.VirtualZone.class
+                .getDeclaredMethod("isMovingSameLevel", Creature.class);
+        level.setAccessible(true);
+        check(!(Boolean)level.invoke(null, actor), "observers receive the walking player's explicit deck elevation");
+        actor.getStatus().setPositionXYZ(end, y, 5.1f);
+        System.out.println("PASS native player walking on both trestle approaches and the 50% deck, ground below and observer height");
+    }
+
+    private static void dispatchSurvey(Creature actor, Item tool, long target, short action) throws Exception {
+        actor.getActions().clear();
+        surveyMessage=null;
+        com.wurmonline.server.behaviours.BehaviourDispatcher.action(
+                actor,actor.getCommunicator(),tool == null ? -1L : tool.getWurmId(),target,action);
+        actor.getActions().poll(actor);
+    }
+
     private static final class Calls implements RailwayMenuActions.Api {
         boolean builder;
         int builds, vehicles, cycles, x, y, layer;

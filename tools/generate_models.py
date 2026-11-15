@@ -695,6 +695,35 @@ def track(mask):
         for a,b in itertools.combinations(ds,2): add_rail_path(m,path_points(a,b))
     return m
 
+
+def trestle_deck(axis):
+    length = 4.0 if axis % 2 == 0 else 4.0 * math.sqrt(2)
+    dx, dy = DIRECTIONS[axis]
+    angle = math.atan2(-dx, dy)
+    mesh = Mesh()
+    for offset in [-.57, .57]:
+        mesh.box((offset * math.cos(angle), offset * math.sin(angle), -.26),
+                 (.28, length, .37), "wooddark", angle)
+    mesh.box((0, 0, -.065), (1.92, length, .13), "wood", angle)
+    add_rail_path(mesh, [(-2 * dx, -2 * dy, 0), (2 * dx, 2 * dy, 0)])
+    return mesh
+
+
+def trestle_bent(height):
+    """A square-ended braced timber stage, with its origin at the top."""
+    mesh = Mesh()
+    for x in [-1.04, 0, 1.04]:
+        mesh.box((x, 0, -height / 2), (.29, .32, height), "wooddark")
+    mesh.box((0, 0, -.14), (2.57, .52, .28), "wood")
+    levels = math.ceil(height / 4)
+    for level in range(levels):
+        top = -.16 - level * (height - .24) / levels
+        bottom = -.16 - (level + 1) * (height - .24) / levels
+        mesh.box((0, 0, bottom), (2.38, .37, .16), "wood")
+        mesh.beam((-1.04, -.23, top), (1.04, -.23, bottom), .16, .16, "wood")
+        mesh.beam((1.04, .23, top), (-1.04, .23, bottom), .16, .16, "wood")
+    return mesh
+
 def _switch_detail(m):
     # The mechanical lever is sufficient scenery. The former white board and
     # its disconnected post floated over the handle without conveying state;
@@ -954,6 +983,10 @@ def main():
         for green in [False,True]:
             aspect="green" if green else "red"
             save("model.wurmrail.signal."+str(approach)+"."+aspect,"signal_"+str(approach)+"_"+aspect,railway_signal(approach,green))
+    for axis in range(4):
+        save("model.wurmrail.trestledeck."+str(axis), "trestledeck_"+str(axis), trestle_deck(axis))
+    for height in [1,2,4,8,16,32]:
+        save("model.wurmrail.trestlebent."+str(height), "trestlebent_"+str(height), trestle_bent(height))
     for mask in range(256):
         m=track(mask); save("model.wurmrail.track."+str(mask),"track_"+str(mask),m)
         for variant,detail in [("junction",switch_detail),("station",station_detail)]:

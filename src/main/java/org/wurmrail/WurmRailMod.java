@@ -44,6 +44,7 @@ public final class WurmRailMod implements WurmServerMod, Configurable, PreInitab
         LogBunkHooks.init();
         LogCarHooks.init();
         LiquidTankHooks.init();
+        TrestleWalkingServerHooks.install();
     }
 
     @Override public void onItemTemplatesCreated() {

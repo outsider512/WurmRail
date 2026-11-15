@@ -103,7 +103,12 @@ public final class IntegrationSmoke {
             javassist.ClassPool fixturePool = HookManager.getInstance().getClassPool();
             fixturePool.get("com.wurmonline.server.creatures.Communicator")
                     .getMethod("sendBml", "(IIZZLjava/lang/String;IIILjava/lang/String;)V")
-                    .setBody("{ }");
+                    .setBody("{ RailwayUiSmoke.captureSurveyBml($5,$9); }");
+            fixturePool.get("com.wurmonline.server.players.PlayerCommunicatorQueued")
+                    .getDeclaredMethod("sendBml").insertBefore("{ RailwayUiSmoke.captureSurveyBml($5,$9); }");
+            for (javassist.CtMethod m : fixturePool.get("com.wurmonline.server.players.PlayerCommunicatorQueued")
+                    .getDeclaredMethods("sendNormalServerMessage"))
+                m.insertBefore("{ RailwayUiSmoke.captureSurveyMessage($1); }");
             // Synthetic actors are Creatures with real status/inventory, rather than
             // logged-in Players. Native Player registration remains unchanged.
             fixturePool.get("com.wurmonline.server.questions.Questions")
@@ -217,6 +222,7 @@ public final class IntegrationSmoke {
                 if (entry != null) registeredActions.add(entry.getActionString());
             require(registeredActions.containsAll(java.util.Arrays.asList("Build railway", "Railway track",
                     "Train controls", "Couple rail wagon",
+                    "Plan Railway Trestle", "Mark Trestle Destination", "Review Trestle Survey",
                     "Build station", "Station", "Choose station destination", "Cycle junction alignment", "Railway signals", "Freight stop", "Bulk hopper status",
                     "Steam rock drill status", "Select drill Bulk Hopper", "Select drill mining faces", "Start drill mining", "Stop drill mining",
                     "Industrial water tank status", "Water freight stop", "Clear empty liquid tank fault",
@@ -463,6 +469,8 @@ public final class IntegrationSmoke {
             UsabilitySmoke.run();
             TrainUiAnswersSmoke.run();
             RailwayUiSmoke.run();
+            RailwayUiSmoke.runTrestleSurvey();
+            RailwayUiSmoke.runElevatedMotion();
             TrackMaterialsSmoke.run();
             RailwayRuntimeSmoke.run();
             TrackCornerRuntimeSmoke.run();

@@ -23,6 +23,7 @@ public final class WurmRailModelsMod implements WurmClientMod, PreInitable {
             RailVehicleTerrainHooks.install(pool);
             RailVehicleMotionHooks.install(pool);
             RailTrackTerrainHooks.install(pool);
+            TrestleWalkingClientHooks.install(pool);
         } catch (Exception failure) {
             throw new IllegalStateException("Cannot install WurmRail resources and vehicle presentation hooks", failure);
         }

@@ -86,6 +86,8 @@ public final class ClientModelsSmoke {
             keys.add("model.wurmrail.steamwaterpump");
             keys.add("model.wurmrail.platform.pickup");
             keys.add("model.wurmrail.platform.dropoff");
+            for(int axis=0;axis<4;axis++)keys.add("model.wurmrail.trestledeck."+axis);
+            for(int height:new int[]{1,2,4,8,16,32})keys.add("model.wurmrail.trestlebent."+height);
             keys.add("model.wurmrail.alignment.0");
             for(int a=0;a<8;a++)for(int b=a+1;b<8;b++)keys.add("model.wurmrail.alignment."+((1<<a)|(1<<b)));
             for(int direction=0;direction<8;direction++)for(String aspect:Arrays.asList("red","green"))keys.add("model.wurmrail.signal."+direction+"."+aspect);
@@ -102,7 +104,7 @@ public final class ClientModelsSmoke {
                 require(url.equals(resources.getResource(key + ".")),
                         "server model name must use native suffix fallback to the custom mesh: " + key);
             }
-            System.out.println("PASS native Resources constructor automatically selects all 825 custom model mappings");
+            System.out.println("PASS native Resources constructor automatically selects all custom model mappings");
             RailVehicleTerrainClientSmoke.run();
             RailTrackTerrainClientSmoke.run();
             RailVehicleMotionClientSmoke.run();
@@ -215,7 +217,7 @@ public final class ClientModelsSmoke {
                     checkNativeVehicleVisibility(key, url, model);
                 models++;
             }
-            require(models == 825, "pack must contain Steam Water Pump, Steam Yarder and Log Bunk forestry equipment, existing industrial storage, four vehicles, 16 directional signal aspects, 29 junction indicators, two passenger platforms and 768 track layouts");
+            require(models == 835, "pack must contain all existing models and ten modular trestle meshes");
             System.out.println("PASS native Collada importer parsed " + models + " custom meshes (" + vertices
                     + " vertices) and " + checkedTextures.size() + " original diffuse textures");
             System.out.println("PASS native renderer optimization and triangle indices for " + optimizedModels
@@ -471,10 +473,15 @@ public final class ClientModelsSmoke {
         boolean tank = key.equals("model.wurmrail.tankcar");
         boolean timber = key.equals("model.wurmrail.logcar");
         boolean vehicle = engine || tank || timber || key.equals("model.wurmrail.cart");
+        if (key.startsWith("model.wurmrail.trestlebent.")) {
+            require(!model.getNotStaticData(), "timber bents use reusable static models");
+            return;
+        }
         if (vehicle) {
             require(model.getNotStaticData(), "vehicle must use dynamic model data for riders: " + key);
         }
-        int mask = vehicle ? 0 : Integer.parseInt(key.substring(key.lastIndexOf('.') + 1));
+        int variant = vehicle ? 0 : Integer.parseInt(key.substring(key.lastIndexOf('.') + 1));
+        int mask = key.startsWith("model.wurmrail.trestledeck.") ? (1<<variant)|(1<<(variant+4)) : variant;
         for (int heading = 0; heading < (vehicle ? 8 : 1); heading++) {
             float yaw = heading * 45f;
             double angle = Math.toRadians(yaw), sin = Math.sin(angle), cos = Math.cos(angle);

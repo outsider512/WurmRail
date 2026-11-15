@@ -42,7 +42,7 @@ def main():
     args = parser.parse_args()
     assert re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?', args.version), 'invalid release version'
     root = Path(__file__).resolve().parent.parent
-    documents = {'README.md', 'QUICKSTART.md', 'CHANGELOG.md', 'THIRD-PARTY.md', 'COAL-MAP-HANDOFF.md'}
+    documents = {'README.md', 'QUICKSTART.md', 'TRESTLES.md', 'CHANGELOG.md', 'THIRD-PARTY.md', 'COAL-MAP-HANDOFF.md'}
     server = documents | {'Install-WurmRail.ps1', 'mods/wurmrail.properties', 'mods/wurmrail/wurmrail.jar'}
     client = documents | {'Install-WurmRailClient.ps1', 'client/mods/wurmrailmodels.properties',
                           'client/mods/wurmrailmodels/wurmrailmodels.jar', 'client/packs/wurmrail-models.jar'}

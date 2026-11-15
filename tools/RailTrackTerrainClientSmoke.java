@@ -50,8 +50,129 @@ public final class RailTrackTerrainClientSmoke {
                     grade(resources,layer,axis,grade);
             gradeBreaks(resources);instanceIsolation(resources);loaderIsolation(resources);exclusions(resources);unavailableAndPortal(resources);cacheAndReplacement(resources);
             bridgeDeck(resources);
+            trestleDeck(resources);
             System.out.println("PASS native terrain-conforming rail tile seams: cardinal and diagonal grades, crests and troughs, surface and cave, zero banking, unchanged XY, cold cached source and independent instances, normals, private VBO invalidation, selection bounds, terraform refresh, unavailable floor and portal edge guards ("+assertions+" assertions)");
         } finally {sourceFixtures.clear();CellRenderable.world=previous;}
+    }
+
+    private static void trestleDeck(Resources resources) throws Exception {
+        RailVehicleTerrainClientSmoke.setupWorld(0,0,5,0,0,5);
+        String baseName="model.wurmrail.trestledeck.2";
+        String name=baseName+".500000.";
+        ModelResourceWrapper base=load(resources,baseName);
+        float[][] original=snapshot(base);
+        com.wurmonline.client.renderer.model.ModelResourceLoader.storeWeakReference(base.getModelData(),base.getResourceUrl(),base);
+        fixture(name,0,46,46);
+        GroundItemData packet=new GroundItemData(970000009L,name,"trestle deck","",(byte)14,
+                46f,46f,40f,0f,0f,0f,0f,0f,0,"",(short)0,1f,(byte)0,-10L,(byte)0,-10L,0);
+        GroundItemCellRenderable rail=new GroundItemCellRenderable(packet);
+        rail.initialize();
+        rail.prepareRender();
+        check(Math.abs(rail.getHPos()-40)<.0001,"trestle follows packet elevation above terrain");
+        for(float[] part : original) for(int j=0;j<part.length;j+=3) {
+            Vector3f vertex=new Vector3f(part[j],part[j+1],part[j+2]);
+            rail.getWorldModelMatrix().transformInPlace(vertex);
+            check(Math.abs(vertex.y-40-part[j+1]-.5f*part[j])<.0001,
+                    "the rendered trestle transform follows its signed grade");
+        }
+        check(Arrays.deepEquals(original,snapshot(base)),"trestle instance leaves its shared mesh untouched");
+        trestleWalking(rail);
+        trestleVisualSeams(resources);
+        System.out.println("PASS native trestle deck packet height, grade deformation and shared-mesh isolation");
+    }
+
+    private static void trestleVisualSeams(Resources resources) throws Exception {
+        for (int axis = 0; axis < 4; axis++) {
+            String baseName = "model.wurmrail.trestledeck." + axis;
+            ModelResourceWrapper base = load(resources,baseName);
+            com.wurmonline.client.renderer.model.ModelResourceLoader.storeWeakReference(
+                    base.getModelData(),base.getResourceUrl(),base);
+            String model = baseName + ".-500000.";
+            float nextHeight = 40f - 2f * (float)Math.hypot(DX[axis],DY[axis]);
+            GroundItemCellRenderable first = trestlePacket(970000021L,model,46,46,40);
+            GroundItemCellRenderable next = trestlePacket(970000022L,model,46 + 4*DX[axis],46 + 4*DY[axis],nextHeight);
+            for (String material : new String[]{"rail","wood"}) {
+                List<float[]> firstEnd = modelEnd(first,axis,1,material);
+                List<float[]> nextEnd = modelEnd(next,axis,-1,material);
+                check(!firstEnd.isEmpty() && !nextEnd.isEmpty(), "trestle seam has " + material + " vertices");
+                for (float[] point : firstEnd) {
+                    float closest = Float.POSITIVE_INFINITY;
+                    for (float[] other : nextEnd) closest = Math.min(closest,distance(point,other));
+                    check(closest < .001f, "sloped " + material + " joins at axis " + axis + ", gap " + closest);
+                }
+            }
+        }
+    }
+
+    private static GroundItemCellRenderable trestlePacket(long id,String model,float x,float y,float z) {
+        GroundItemData packet = new GroundItemData(id,model,"trestle deck","",(byte)14,
+                x,y,z,0f,0f,0f,0f,0f,0,"",(short)0,.9f,(byte)0,-10L,(byte)0,-10L,0);
+        GroundItemCellRenderable renderable = new GroundItemCellRenderable(packet);
+        renderable.initialize();
+        renderable.prepareRender();
+        return renderable;
+    }
+
+    private static void trestleWalking(GroundItemCellRenderable rail) throws Exception {
+        World world = CellRenderable.world;
+        SurfaceCell cell = (SurfaceCell)allocate(SurfaceCell.class);
+        set(cell,"renderablesToAdd",new ArrayList<CellRenderable>());
+        set(cell,"renderablesToRemove",new ArrayList<CellRenderable>());
+        CellRenderer renderer = (CellRenderer)allocate(CellRenderer.class);
+        set(renderer,"wurmRailDecks",new org.wurmrail.client.TrestleWalkingDecks());
+        set(renderer,"tickRenderablesAdd",new ArrayList<CellRenderable>());
+        set(renderer,"tickRenderablesRemove",new ArrayList<CellRenderable>());
+        SurfaceCell[][] grid = new SurfaceCell[16][16];
+        grid[0][0] = cell;
+        set(renderer,"surfaceCells",grid);
+        world.setCellRenderer(renderer);
+        renderer.addRenderable(rail);
+
+        Constructor<?> constructor = Class.forName("com.wurmonline.client.game.PlayerMovementCheck")
+                .getDeclaredConstructor(World.class);
+        constructor.setAccessible(true);
+        com.wurmonline.shared.util.MovementChecker movement =
+                (com.wurmonline.shared.util.MovementChecker)constructor.newInstance(world);
+        movement.setPosition(45f,46f,39.5f,90f,0);
+        movement.started = true;
+        for (int i = 0; i < 12; i++)
+            movement.movestep(.4f,movement.getX(),movement.getZ(),movement.getY(),
+                    -2500f,2500f,90f,(byte)1,0);
+        check(movement.getX() > 45.25f && Math.abs(movement.getZ() - (40f + .5f * (movement.getX()-46))) < .03,
+                "native client walking uses the received deck height and grade");
+        movement.setPosition(47.5f,46f,40.75f,270f,0);
+        for (int i = 0; i < 20; i++) {
+            movement.movestep(.4f,movement.getX(),movement.getZ(),movement.getY(),
+                    -2500f,2500f,270f,(byte)1,0);
+            check(Math.abs(movement.getZ() - (40f + .5f * (movement.getX()-46))) < .005,
+                    "each downhill tick follows the deck at x=" + movement.getX() + ", z=" + movement.getZ());
+        }
+        check(movement.getX() < 46.5f,"downhill walking progresses along the slope");
+        Class<?>[] heightArgs = {float.class,float.class,float.class};
+        float footX=movement.getX()+.05f;
+        check(Math.abs((Float)call(movement,"wurmRailCollisionHeight",heightArgs,footX,46f,5f)
+                        -(40f+.5f*(footX-46f))) < .001f,
+                "the collision solver's actual XY stays supported on the same deck plane");
+        check((Float)call(movement,"wurmRailCollisionHeight",heightArgs,footX,47.1f,5f)==5f,
+                "stepping beyond the edge keeps the native falling height");
+        movement.setPosition(46f,46f,5f,90f,0);
+        check(Math.abs((Float)call(movement,"getHeight",heightArgs,46f,46f,5f)-5f) < .001,
+                "a player under a visible deck continues to walk on terrain");
+        renderer.removeRenderable(rail,false);
+        movement.setPosition(46f,46f,40f,90f,0);
+        check(Math.abs((Float)call(movement,"getHeight",heightArgs,46f,46f,40f)-5f) < .001,
+                "the deck stops supporting walking when its ground item is removed");
+
+        GroundItemData diagonal = new GroundItemData(970000010L,"model.wurmrail.trestledeck.1.500000.",
+                "trestle deck","",(byte)14,46f,46f,40f,0f,0f,0f,0f,0f,0,"",(short)0,1f,(byte)0,-10L,(byte)0,-10L,0);
+        org.wurmrail.client.TrestleWalkingDecks index =
+                (org.wurmrail.client.TrestleWalkingDecks)get(renderer,"wurmRailDecks");
+        index.add(diagonal,1,500000);
+        movement.setPosition(48.25f,44.25f,41.4f,90f,0);
+        check(Math.abs((Float)call(movement,"getHeight",heightArgs,48.25f,44.25f,41.4f)
+                        -(40f + (float)Math.sqrt(2))) < .01,
+                "the client samples the visible diagonal plank across its tile boundary");
+        System.out.println("PASS native client walking on visible trestle decks, diagonal plank overhang, ground under the deck and removal");
     }
 
     private static void bridgeDeck(Resources resources) throws Exception {
@@ -330,9 +451,13 @@ public final class RailTrackTerrainClientSmoke {
     }
 
     private static List<float[]> railEnd(GroundItemCellRenderable item,int axis,int side) throws Exception {
+        return modelEnd(item,axis,side,"rail");
+    }
+
+    private static List<float[]> modelEnd(GroundItemCellRenderable item,int axis,int side,String material) throws Exception {
         List<float[]> result=new ArrayList<float[]>();Matrix matrix=item.getWorldModelMatrix();
         for(TriangleMesh mesh:meshes(item.getModelWrapper())) {
-            if(!"rail".equals(mesh.getColladaMaterial().getName()))continue;
+            if(!material.equals(mesh.getColladaMaterial().getName()))continue;
             FloatBuffer points=mesh.getVertexBuffer();
             for(int i=0;i<points.limit();i+=3) {
                 float t=(points.get(i)*DX[axis]+points.get(i+2)*DY[axis])/(DX[axis]*DX[axis]+DY[axis]*DY[axis]);
