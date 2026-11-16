@@ -20,6 +20,8 @@ public final class RailNetwork {
     private final Map<Long, Node> tileNodes = new HashMap<>();
     private final Map<String, Train> trainData = new LinkedHashMap<String, Train>();
     private final Map<String, ElevatedEdge> elevatedEdges = new LinkedHashMap<>();
+    private final Map<String, CurvedSpan> curvedSpans = new LinkedHashMap<>();
+    private final Map<String, SurveyedTile> surveyedTiles = new HashMap<>();
     private long elevationRevision;
     public final Map<String, Node> nodes = Collections.unmodifiableMap(nodeData);
     public final Map<String, Train> trains = Collections.unmodifiableMap(trainData);
@@ -103,8 +105,12 @@ public final class RailNetwork {
         public final float x, y, z;
 
         private ApproachSeam(Node first, Node second, double z) {
-            x = (first.worldX() + second.worldX()) / 2;
-            y = (first.worldY() + second.worldY()) / 2;
+            this((first.worldX()+second.worldX())*.5,(first.worldY()+second.worldY())*.5,z);
+        }
+
+        private ApproachSeam(double x,double y,double z) {
+            this.x=(float)x;
+            this.y=(float)y;
             this.z = (float)z;
         }
     }
@@ -302,6 +308,11 @@ public final class RailNetwork {
             owned.add(n.name);
         }
         if (span.isEmpty()) throw problem("Unknown trestle "+name+".");
+        for (CurvedSpan curved : curvedSpans.values()) {
+            List<String> deck = curved.rails.subList(1,curved.rails.size()-1);
+            if (deck.stream().anyMatch(owned::contains) && !owned.containsAll(deck))
+                throw problem("Curved trestle rails must be removed together.");
+        }
         for (Node n : span) {
             signalSystem.requireTrackEditable(n.name);
             if (n.station || signalSystem.hasSignal(n.name))
@@ -323,6 +334,12 @@ public final class RailNetwork {
 
     public synchronized List<Node> removeTrestle(String name) {
         List<Node> span = checkTrestleRemoval(name);
+        for (Node rail : span) {
+            SurveyedTile tile = surveyedTiles.get(rail.name);
+            if (tile == null) continue;
+            for (String owner : tile.span.rails) surveyedTiles.remove(owner);
+            curvedSpans.remove(tile.span.rails.get(1));
+        }
         elevatedEdges.values().removeIf(grade -> name.equals(grade.first.trestle)||name.equals(grade.second.trestle));
         elevationRevision++;
         for (Node n : span) removeNode(n.name);
@@ -343,6 +360,13 @@ public final class RailNetwork {
         ElevatedEdge profile = elevatedEdges.get(edge(from, towards));
         if (profile == null) return Double.NaN;
         Node first = node(from), second = node(towards);
+        if (profile.curved!=null) {
+            SurveyedTile a = surveyedTiles.get(from), b = surveyedTiles.get(towards);
+            double length = profile.curved.alignment.length;
+            double fromDistance = a == null ? (first == profile.first ? 0 : length) : a.section.center();
+            double toDistance = b == null ? (second == profile.second ? length : 0) : b.section.center();
+            return (profile.at(second) - profile.at(first)) / Math.abs(toDistance - fromDistance);
+        }
         double run = Math.hypot(second.worldX() - first.worldX(), second.worldY() - first.worldY());
         if (profile.seam != null) run *= .5;
         return (profile.at(second) - profile.at(first)) / run;
@@ -429,6 +453,74 @@ public final class RailNetwork {
         setStraightElevation(rails, deck, true);
     }
 
+    /** Bind the original survey to an already-linked tile corridor. Train distance follows the survey, including arcs. */
+    public synchronized void setCurvedTrestleElevation(List<String> rails,TrestleAlignment alignment) {
+        if (!alignment.curved) throw problem("A curved trestle requires a curved survey.");
+        if (alignment.length>2000 || alignment.surveyRadius()>2000 || alignment.surveyPoints().size()>502
+                || alignment.maximumAbsoluteGradient()>1+1e-12 || alignment.surveyPoints().stream().anyMatch(point ->
+                point.x<0 || point.y<0 || point.x>Integer.MAX_VALUE || point.y>Integer.MAX_VALUE
+                        || point.z< -3277 || point.z>3277))
+            throw problem("The curved trestle exceeds the saved survey limits.");
+        List<TrestleAlignment.TileSection> tiles = alignment.tileSections();
+        if (rails.size()!=tiles.size()+2 || new HashSet<>(rails).size()!=rails.size())
+            throw problem("The curved survey does not match the linked rail tiles.");
+        Set<String> occupied=new HashSet<>(rails);
+        for (Train train : trains.values())
+            if (train.path.stream().anyMatch(occupied::contains))
+                throw problem("Clear train "+train.name+" from the proposed curved trestle first.");
+        CurvedSpan span=new CurvedSpan(rails,alignment);
+        Map<String,SurveyedTile> proposedTiles=new LinkedHashMap<>();
+        for (int i=0;i<rails.size();i++) {
+            Node rail=node(rails.get(i));
+            if (rail.layer!=0 || rail.bridgeId!=-10L || isElevatedRail(rail.name) || rail.links.size()>2)
+                throw problem("A curved trestle requires clear, two-ended surface rail tiles.");
+            if (i>0 && !rail.links.contains(rails.get(i-1))
+                    || i+1<rails.size() && !rail.links.contains(rails.get(i+1)))
+                throw problem("The curved survey does not match the linked rail tiles.");
+            if (i==0 || i==rails.size()-1) {
+                checkCurvedApproach(rail, i==0?rails.get(1):rails.get(i-1),alignment,i==0);
+            } else {
+                TrestleAlignment.TileSection section=tiles.get(i-1);
+                if (section.x!=rail.tileX || section.y!=rail.tileY)
+                    throw problem("The curved survey does not match the linked rail tiles.");
+                proposedTiles.put(rail.name,new SurveyedTile(span,section,i));
+            }
+        }
+        for (int i=1;i<rails.size();i++) {
+            Node first=node(rails.get(i-1)), second=node(rails.get(i));
+            boolean start=i==1, end=i==rails.size()-1;
+            TrestleAlignment.Point a=alignment.at(start?0:tiles.get(i-2).center());
+            TrestleAlignment.Point b=alignment.at(end?alignment.length:tiles.get(i-1).center());
+            ApproachSeam seam=start?new ApproachSeam(a.x,a.y,a.z):end?new ApproachSeam(b.x,b.y,b.z):null;
+            elevatedEdges.put(edge(first.name,second.name),
+                    new ElevatedEdge(first,second,a.z,b.z,start,end,seam,span));
+        }
+        curvedSpans.put(rails.get(1),span);
+        surveyedTiles.putAll(proposedTiles);
+        elevationRevision++;
+        for (Train train:trainData.values()) if (!train.path.isEmpty()) refresh(train);
+    }
+
+    private void checkCurvedApproach(Node rail,String connected,TrestleAlignment alignment,boolean start) {
+        double distance=start?0:alignment.length;
+        TrestleAlignment.Point join=alignment.at(distance);
+        double x=join.x-rail.worldX(), y=join.y-rail.worldY();
+        double[] tangent=alignment.tangentAt(distance);
+        double along=x*tangent[0]+y*tangent[1];
+        if (Math.abs(Math.max(Math.abs(x),Math.abs(y))-2)>EPS
+                || Math.abs(x*tangent[1]-y*tangent[0])>EPS || (start?along:-along)<=0)
+            throw problem("The curve must meet the inside edge of the ground approach.");
+        for (String link:rail.links) if (!link.equals(connected))
+            checkCurvedApproachDirection(rail,node(link),join.x,join.y);
+    }
+
+    private void checkCurvedApproachDirection(Node rail,Node other,double joinX,double joinY) {
+        double x=joinX-rail.worldX(), y=joinY-rail.worldY();
+        double dx=other.worldX()-rail.worldX(), dy=other.worldY()-rail.worldY();
+        if (other.layer!=0 || other.bridgeId!=-10L || x*dx+y*dy>=0 || Math.abs(x*dy-y*dx)>EPS)
+            throw problem("Connect a curved trestle through its aligned surface approach.");
+    }
+
     private void setStraightElevation(List<String> rails, TrestleAlignment alignment, boolean approaches) {
         if (rails.size() < 2) throw problem("An elevated alignment requires at least two linked rails.");
         Node start = node(rails.get(0)), end = node(rails.get(rails.size() - 1));
@@ -464,10 +556,38 @@ public final class RailNetwork {
         for (Train train : trainData.values()) if (!train.path.isEmpty()) refresh(train);
     }
 
-    /** Remove an entire profile before removing its physical rail nodes. */
+    public synchronized org.wurmrail.shared.TrestlePanel surveyedPanel(String rail) {
+        SurveyedTile tile = surveyedTiles.get(rail);
+        return tile == null ? null : tile.span.alignment.panel(tile.section);
+    }
+
+    /** Rolls back a newly installed profile before removing its physical rail nodes. */
+    public synchronized void clearTrestleElevation(List<String> rails) {
+        CurvedSpan span = rails.size() < 3 ? null : curvedSpans.get(rails.get(1));
+        if (span == null) {
+            clearStraightElevation(rails);
+            return;
+        }
+        if (!span.rails.equals(rails)) throw problem("Remove a curved trestle as a complete span.");
+        checkProfileClear(rails, span);
+        for (int i = 1; i < rails.size(); i++) elevatedEdges.remove(edge(rails.get(i - 1), rails.get(i)));
+        for (String rail : rails) surveyedTiles.remove(rail);
+        curvedSpans.remove(rails.get(1));
+        elevationRevision++;
+    }
+
     public synchronized void clearStraightElevation(List<String> rails) {
+        checkProfileClear(rails, null);
+        for (int i = 1; i < rails.size(); i++) elevatedEdges.remove(edge(rails.get(i - 1), rails.get(i)));
+        elevationRevision++;
+    }
+
+    private void checkProfileClear(List<String> rails, CurvedSpan span) {
         for (int i = 1; i < rails.size(); i++) {
             String first = rails.get(i - 1), second = rails.get(i);
+            ElevatedEdge profile=elevatedEdges.get(edge(first,second));
+            if (profile!=null && profile.curved!=span)
+                throw problem("Remove a curved trestle as a complete span.");
             for (Train train : trainData.values()) {
                 for (int j = 1; j < train.path.size(); j++) {
                     if (sameEdge(first, second, train.path.get(j - 1), train.path.get(j)))
@@ -475,13 +595,18 @@ public final class RailNetwork {
                 }
             }
         }
-        for (int i = 1; i < rails.size(); i++) elevatedEdges.remove(edge(rails.get(i - 1), rails.get(i)));
-        elevationRevision++;
     }
 
     private void requireStraightElevatedConnection(Node rail, Node next) {
         for (String linked : rail.links) {
-            if (!elevatedEdges.containsKey(edge(rail.name, linked))) continue;
+            ElevatedEdge profile=elevatedEdges.get(edge(rail.name,linked));
+            if (profile==null) continue;
+            if (profile.curved!=null) {
+                if (!profile.groundAt(rail) || rail.links.size()>1)
+                    throw problem("Extend a curved trestle from its ground approach.");
+                checkCurvedApproachDirection(rail,next,profile.seam.x,profile.seam.y);
+                continue;
+            }
             Node other = node(linked);
             if (rail.links.size() > 1 || next.layer != 0 || next.bridgeId != -10L
                     || other.tileX - rail.tileX != rail.tileX - next.tileX
@@ -495,19 +620,49 @@ public final class RailNetwork {
         final double firstZ, secondZ;
         final boolean firstGround, secondGround;
         final ApproachSeam seam;
+        final CurvedSpan curved;
 
         ElevatedEdge(Node first, Node second, double firstZ, double secondZ, boolean firstGround, boolean secondGround) {
+            this(first,second,firstZ,secondZ,firstGround,secondGround,
+                    firstGround || secondGround ? new ApproachSeam(first,second,firstGround?firstZ:secondZ) : null,null);
+        }
+
+        ElevatedEdge(Node first,Node second,double firstZ,double secondZ,boolean firstGround,boolean secondGround,
+                     ApproachSeam seam,CurvedSpan curved) {
             this.first = first;
             this.second = second;
             this.firstZ = firstZ;
             this.secondZ = secondZ;
             this.firstGround = firstGround;
             this.secondGround = secondGround;
-            this.seam = firstGround || secondGround ? new ApproachSeam(first, second, firstGround ? firstZ : secondZ) : null;
+            this.seam = seam;
+            this.curved = curved;
         }
 
         double at(Node rail) { return rail == first ? firstZ : secondZ; }
         boolean groundAt(Node rail) { return rail == first ? firstGround : secondGround; }
+    }
+
+    private static final class CurvedSpan {
+        final List<String> rails;
+        final TrestleAlignment alignment;
+
+        CurvedSpan(List<String> rails,TrestleAlignment alignment) {
+            this.rails = Collections.unmodifiableList(new ArrayList<>(rails));
+            this.alignment = alignment;
+        }
+    }
+
+    private static final class SurveyedTile {
+        final CurvedSpan span;
+        final TrestleAlignment.TileSection section;
+        final int index;
+
+        SurveyedTile(CurvedSpan span,TrestleAlignment.TileSection section,int index) {
+            this.span=span;
+            this.section=section;
+            this.index=index;
+        }
     }
 
     private void validateElevation(ElevatedEdge grade, Map<String, ElevatedEdge> proposed) {
@@ -1503,7 +1658,7 @@ public final class RailNetwork {
         if(!mayChangeTraction) { train.speed=0;train.status="Stopped clear in the local turnaround lane.";return true; }
         train.speed=0;int plannedJunction=plan.backingPath.indexOf(plan.junction);
         List<Node> plannedNodes=new ArrayList<Node>();for(String rail:plan.backingPath)plannedNodes.add(node(rail));
-        Geometry plannedGeometry=new Geometry(plannedNodes,elevatedEdges);
+        Geometry plannedGeometry=new Geometry(plannedNodes,elevatedEdges,surveyedTiles);
         double clearance=plannedGeometry.centers[plannedNodes.size()-1]-plannedGeometry.centers[plannedJunction]-(train.carIds.size()-1)*CAR_SPACING;
         boolean clear=!signalOccupiesNode(train,plan.junction)&&clearance>=TRAIN_CLEARANCE-EPS;
         for(Pose pose:train.poses)if(plan.backingPath.indexOf(pose.railName)<=plannedJunction)clear=false;
@@ -1754,8 +1909,15 @@ public final class RailNetwork {
             double[] point=g.point(Math.max(0,Math.min(s,g.total)));
             double dx=point[2],dy=point[3];
             if (Math.abs(dx)+Math.abs(dy)<EPS && t.initialTowards!=null) {
-                Node from=node(t.path.get(0)),to=node(t.initialTowards);
-                dx=to.worldX()-from.worldX();dy=to.worldY()-from.worldY();
+                SurveyedTile deck=surveyedTiles.get(t.path.get(0));
+                if (deck!=null) {
+                    double[] tangent=deck.span.alignment.tangentAt(deck.section.center());
+                    int sign=t.initialTowards.equals(deck.span.rails.get(deck.index+1))?1:-1;
+                    dx=tangent[0]*sign;dy=tangent[1]*sign;
+                } else {
+                    Node from=node(t.path.get(0)),to=node(t.initialTowards);
+                    dx=to.worldX()-from.worldX();dy=to.worldY()-from.worldY();
+                }
             }
             float rotation=(float)((Math.toDegrees(Math.atan2(dx,-dy))+360)%360);
             int piece=0;
@@ -1773,7 +1935,7 @@ public final class RailNetwork {
             }
             int elevated = g.elevatedEdge(piece,s);
             result.add(new Pose(t.carIds.get(c),x,y,rotation,owner.layer,t.path.get(piece),
-                    g.elevation(elevated,s),elevated<0?null:g.seams[elevated]));
+                    g.elevation(piece,elevated,s),elevated<0?null:g.seams[elevated]));
         }
         return Collections.unmodifiableList(result);
     }
@@ -2014,7 +2176,7 @@ public final class RailNetwork {
     private Geometry geometry(Train t) {
         if(t.cachedGeometry!=null&&t.cachedElevationRevision==elevationRevision&&t.path.equals(t.cachedPath))return t.cachedGeometry;
         List<Node> path=new ArrayList<Node>();for(String name:t.path)path.add(node(name));
-        t.cachedGeometry=new Geometry(path,elevatedEdges);t.cachedPath=new ArrayList<String>(t.path);
+        t.cachedGeometry=new Geometry(path,elevatedEdges,surveyedTiles);t.cachedPath=new ArrayList<String>(t.path);
         t.cachedElevationRevision=elevationRevision;return t.cachedGeometry;
     }
     /**
@@ -2030,13 +2192,17 @@ public final class RailNetwork {
         final double originX,originY;
         final double[] entryZ, exitZ;
         final ApproachSeam[] seams;
-        final boolean[] groundFirst;
-        Geometry(List<Node> nodes, Map<String, ElevatedEdge> grades) {
+        final boolean[] groundFirst, curvedEdges;
+        Geometry(List<Node> nodes,Map<String,ElevatedEdge> grades,Map<String,SurveyedTile> surveyed) {
             int count=nodes.size();starts=new double[count];centers=new double[count];ends=new double[count];
             entryZ=new double[count];exitZ=new double[count];
             seams=new ApproachSeam[count];groundFirst=new boolean[count];
+            curvedEdges=new boolean[count];
             Arrays.fill(entryZ,Double.NaN);Arrays.fill(exitZ,Double.NaN);
-            originX=nodes.get(0).worldX();originY=nodes.get(0).worldY();
+            SurveyedTile initial=surveyed.get(nodes.get(0).name);
+            TrestleAlignment.Point origin=initial==null?null:initial.span.alignment.at(initial.section.center());
+            originX=origin==null?nodes.get(0).worldX():origin.x;
+            originY=origin==null?nodes.get(0).worldY():origin.y;
             double distance=0;
             for(int i=0;i<count;i++) {
                 Node n=nodes.get(i);double x=n.worldX(),y=n.worldY();
@@ -2048,12 +2214,32 @@ public final class RailNetwork {
                         entryZ[i] = grade.at(n);
                         seams[i-1] = grade.seam;
                         groundFirst[i-1] = grade.groundAt(previous);
+                        curvedEdges[i-1]=grade.curved!=null;
                     }
+                }
+                SurveyedTile deck=surveyed.get(n.name);
+                if (deck!=null) {
+                    boolean forward=i>0?nodes.get(i-1).name.equals(deck.span.rails.get(deck.index-1))
+                            :i+1==count || nodes.get(i+1).name.equals(deck.span.rails.get(deck.index+1));
+                    double center=deck.section.center();
+                    double from=i==0?center:forward?deck.section.entry:deck.section.exit;
+                    double to=i+1==count?center:forward?deck.section.exit:deck.section.entry;
+                    Curve curve=new Curve(deck.span.alignment,from,to,distance);
+                    starts[i]=distance;
+                    centers[i]=distance+Math.abs(center-from);
+                    distance+=curve.length;
+                    ends[i]=distance;
+                    curves.add(curve);
+                    continue;
                 }
                 double ax=i==0?x:(nodes.get(i-1).worldX()+x)*.5;
                 double ay=i==0?y:(nodes.get(i-1).worldY()+y)*.5;
                 double bx=i==count-1?x:(nodes.get(i+1).worldX()+x)*.5;
                 double by=i==count-1?y:(nodes.get(i+1).worldY()+y)*.5;
+                ApproachSeam before=i==0?null:curvedJoin(grades,n,nodes.get(i-1));
+                ApproachSeam after=i+1==count?null:curvedJoin(grades,n,nodes.get(i+1));
+                if (before!=null) { ax=before.x;ay=before.y; }
+                if (after!=null) { bx=after.x;by=after.y; }
                 // Endpoint halves are straight; the middle control gives uniform parameter speed.
                 double cx=i==0||i==count-1?(ax+bx)*.5:x;
                 double cy=i==0||i==count-1?(ay+by)*.5:y;
@@ -2064,6 +2250,10 @@ public final class RailNetwork {
             }
             total=distance;
         }
+        private static ApproachSeam curvedJoin(Map<String,ElevatedEdge> grades,Node ground,Node other) {
+            ElevatedEdge edge=grades.get(edge(ground.name,other.name));
+            return edge!=null && edge.curved!=null && edge.groundAt(ground)?edge.seam:null;
+        }
         int elevatedEdge(int piece, double distance) {
             if (piece + 1 < centers.length && distance >= centers[piece] && Double.isFinite(exitZ[piece]))
                 return piece;
@@ -2071,8 +2261,11 @@ public final class RailNetwork {
                 return piece-1;
             return -1;
         }
-        float elevation(int edge, double distance) {
+        float elevation(int piece,int edge,double distance) {
+            Curve curve=curves.get(piece);
+            if (curve.alignment!=null) return (float)curve.alignment.elevationAt(curve.chainage(distance-curve.offset));
             if (edge < 0) return Float.NaN;
+            if (curvedEdges[edge]) return Float.NaN;
             double from = centers[edge], to = centers[edge+1];
             if (seams[edge] != null) {
                 double boundary = (from+to)/2;
@@ -2097,8 +2290,11 @@ public final class RailNetwork {
         static final int SAMPLES=64;
         final double ax,ay,cx,cy,bx,by,offset,length;
         final double[] arc=new double[SAMPLES+1];
+        final TrestleAlignment alignment;
+        final double surveyedFrom,surveyedTo;
         Curve(double ax,double ay,double cx,double cy,double bx,double by,double offset) {
             this.ax=ax;this.ay=ay;this.cx=cx;this.cy=cy;this.bx=bx;this.by=by;this.offset=offset;
+            alignment=null;surveyedFrom=surveyedTo=0;
             double px=ax,py=ay;
             for(int i=1;i<=SAMPLES;i++) {
                 double t=i/(double)SAMPLES,u=1-t,x=u*u*ax+2*u*t*cx+t*t*bx,y=u*u*ay+2*u*t*cy+t*t*by;
@@ -2106,7 +2302,27 @@ public final class RailNetwork {
             }
             length=arc[SAMPLES];
         }
+        Curve(TrestleAlignment alignment,double from,double to,double offset) {
+            ax=ay=cx=cy=bx=by=0;
+            this.offset=offset;
+            this.alignment=alignment;
+            surveyedFrom=from;
+            surveyedTo=to;
+            length=Math.abs(to-from);
+        }
+        double chainage(double distance) {
+            if(distance<=0)return surveyedFrom;
+            if(distance>=length)return surveyedTo;
+            return surveyedFrom+Math.copySign(distance,surveyedTo-surveyedFrom);
+        }
         double[] point(double distance) {
+            if(alignment!=null) {
+                double chainage=chainage(distance);
+                TrestleAlignment.Point point=alignment.at(chainage);
+                double[] tangent=alignment.tangentAt(chainage);
+                double sign=surveyedTo>=surveyedFrom?1:-1;
+                return new double[]{point.x,point.y,tangent[0]*sign,tangent[1]*sign};
+            }
             int index=Arrays.binarySearch(arc,distance);
             double t;
             if(index>=0)t=index/(double)SAMPLES;
@@ -2172,7 +2388,8 @@ public final class RailNetwork {
             String expected=p.getProperty("checksum");
             if(expected==null || !MessageDigest.isEqual(expected.getBytes("UTF-8"),checksum(p).getBytes("UTF-8"))) throw problem("State checksum does not match.");
             String format=required(p,"format");
-            if(!"1".equals(format)&&!"2".equals(format)&&!"3".equals(format)&&!"4".equals(format)&&!"5".equals(format)&&!"6".equals(format))
+            if(!"1".equals(format)&&!"2".equals(format)&&!"3".equals(format)&&!"4".equals(format)
+                    &&!"5".equals(format)&&!"6".equals(format)&&!"7".equals(format)&&!"8".equals(format))
                 throw problem("Unsupported rail state format.");
             RailNetwork net=new RailNetwork();net.maxCars=integer(p,"maxCars",1,64);
             Map<Train,StationTurnback.Plan> loadedTurnbacks=new LinkedHashMap<Train,StationTurnback.Plan>();
@@ -2207,8 +2424,9 @@ public final class RailNetwork {
                 }
             }
             if(!loadedEntrances.equals(entrances))throw problem("Saved cave entrance is missing its track connection.");
-            if ("5".equals(format)||"6".equals(format)) {
-                int countElevated = integer(p, "elevatedEdges", 1, 100000);
+            boolean curvedFormat = "7".equals(format) || "8".equals(format);
+            if ("5".equals(format)||"6".equals(format)||curvedFormat) {
+                int countElevated = integer(p, "elevatedEdges", curvedFormat?0:1, 100000);
                 for (int i = 0; i < countElevated; i++) {
                     String k = "elevated." + i + ".";
                     Node first = net.node(required(p, k + "first")), second = net.node(required(p, k + "second"));
@@ -2218,6 +2436,33 @@ public final class RailNetwork {
                             approach==1, approach==2);
                     net.validateElevation(grade, Collections.emptyMap());
                     net.elevatedEdges.put(edge(first.name, second.name), grade);
+                }
+                if (curvedFormat) {
+                    int countCurved=integer(p,"curvedSpans",1,100000);
+                    for(int i=0;i<countCurved;i++) {
+                        String key="curved."+i+".";
+                        int marks=integer(p,key+"points",3,502);
+                        List<TrestleAlignment.Point> points=new ArrayList<>();
+                        for(int j=0;j<marks;j++) {
+                            String prefix=key+"point."+j+".";
+                            points.add(new TrestleAlignment.Point(decimal(p,prefix+"x",0,Integer.MAX_VALUE),
+                                    decimal(p,prefix+"y",0,Integer.MAX_VALUE),decimal(p,prefix+"z",-3277,3277)));
+                        }
+                        String geometry = "7".equals(format) ? "rounded" : required(p, key + "geometry");
+                        TrestleAlignment alignment;
+                        if ("hermite".equals(geometry) || "hermite-profile".equals(geometry)) {
+                            alignment = TrestleAlignment.waypoints(points, decimal(p,key+"radius",12,2000), 2000, 1,
+                                    integer(p,key+"startHeading",0,7), integer(p,key+"endHeading",0,7));
+                            if ("hermite-profile".equals(geometry)) {
+                                List<Double> heights = new ArrayList<>();
+                                for (int j = 1; j < marks-1; j++) heights.add(points.get(j).z);
+                                alignment = alignment.withWaypointElevations(heights, 1);
+                            }
+                        } else if ("rounded".equals(geometry)) {
+                            alignment = TrestleAlignment.rounded(points,decimal(p,key+"radius",4,2000),2000,1);
+                        } else throw problem("Unknown saved trestle geometry.");
+                        net.setCurvedTrestleElevation(list(p,key+"rails"),alignment);
+                    }
                 }
                 for (int i = 0; i < count; i++) {
                     String k = "node." + i + ".";
@@ -2319,7 +2564,7 @@ public final class RailNetwork {
                 }
             }
             net.validateLoadedAlignments("1".equals(format)||"2".equals(format));
-            if("4".equals(format)||"5".equals(format)||"6".equals(format)) {
+            if("4".equals(format)||"5".equals(format)||"6".equals(format)||curvedFormat) {
                 int signalCount=integer(p,"signals",0,800000);
                 for(int i=0;i<signalCount;i++) {
                     String k="signal."+i+".";
@@ -2337,6 +2582,8 @@ public final class RailNetwork {
         Properties p=new Properties();
         int format=elevatedEdges.isEmpty()?4:5;
         for(ElevatedEdge grade:elevatedEdges.values()) if(grade.seam!=null) { format=6;break; }
+        if (!curvedSpans.isEmpty()) format=7;
+        if (curvedSpans.values().stream().anyMatch(span -> span.alignment.startHeading >= 0)) format=8;
         put(p,"format",format);
         put(p,"maxCars",maxCars);put(p,"nodes",nodes.size());put(p,"trains",trains.size());
         int i=0;
@@ -2356,13 +2603,38 @@ public final class RailNetwork {
         }
         if(i>0)put(p,"entrances",i);
         if (!elevatedEdges.isEmpty()) {
-            put(p,"elevatedEdges",elevatedEdges.size());
             i=0;
             for (ElevatedEdge grade : elevatedEdges.values()) {
+                if(grade.curved!=null)continue;
                 String k="elevated."+(i++)+".";
                 put(p,k+"first",grade.first.name);put(p,k+"second",grade.second.name);
                 put(p,k+"firstZ",grade.firstZ);put(p,k+"secondZ",grade.secondZ);
                 if(grade.seam!=null)put(p,k+"approach",grade.firstGround?1:2);
+            }
+            put(p,"elevatedEdges",i);
+        }
+        if(!curvedSpans.isEmpty()) {
+            put(p,"curvedSpans",curvedSpans.size());
+            i=0;
+            for(CurvedSpan span:curvedSpans.values()) {
+                String key="curved."+(i++)+".";
+                put(p,key+"rails",join(span.rails));
+                put(p,key+"radius",span.alignment.surveyRadius());
+                if (format == 8) {
+                    String geometry = span.alignment.startHeading >= 0 ? "hermite" : "rounded";
+                    put(p,key+"geometry",span.alignment.hasWaypointElevations() ? "hermite-profile" : geometry);
+                    if (span.alignment.startHeading >= 0) {
+                        put(p,key+"startHeading",span.alignment.startHeading);
+                        put(p,key+"endHeading",span.alignment.endHeading);
+                    }
+                }
+                List<TrestleAlignment.Point> points=span.alignment.surveyPoints();
+                put(p,key+"points",points.size());
+                for(int j=0;j<points.size();j++) {
+                    String prefix=key+"point."+j+".";
+                    TrestleAlignment.Point mark=points.get(j);
+                    put(p,prefix+"x",mark.x);put(p,prefix+"y",mark.y);put(p,prefix+"z",mark.z);
+                }
             }
         }
         i=0;

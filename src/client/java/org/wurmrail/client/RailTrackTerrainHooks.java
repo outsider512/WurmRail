@@ -45,16 +45,19 @@ public final class RailTrackTerrainHooks {
                 +" if(this.pickingBound==null)this.pickingBound=new com.wurmonline.client.renderer.model.ModelDataBounds(this.bounds); }",data));
         CtClass scenery=pool.get("com.wurmonline.client.renderer.cell.StaticModelRenderable");
         scenery.addMethod(CtNewMethod.make("protected boolean wurmRailUsesDeckMatrix() { return false; }",scenery));
+        scenery.addMethod(CtNewMethod.make("protected org.wurmrail.shared.TrestlePanel wurmRailCurvedPanel() { return null; }",scenery));
         scenery.addMethod(CtNewMethod.make("public boolean wurmRailIsTrackModel() {"
                 +" return !this.wurmRailUsesDeckMatrix() && org.wurmrail.client.RailTrackTerrain.trackMask(this.getModelName()==null?null:this.getModelName().toString())>=0; }",scenery));
         // Railway scenery takes its private copy inside the callback, where we
         // can avoid native clone() replacing the pristine URL-cache entry.
         scenery.getDeclaredMethod("wantNewModelCopy").insertBefore(
-                "{ if(this.wurmRailIsTrackModel()||this.wurmRailUsesDeckMatrix())return false; }");
+                "{ if(this.wurmRailIsTrackModel()||this.wurmRailUsesDeckMatrix()||this.wurmRailCurvedPanel()!=null)return false; }");
         // The first ModelResourceWrapper listener receives the pristine cached
         // wrapper itself. Clone that callback too: deforming it would contaminate
         // every later instance of the same track shape on a different slope.
-        scenery.getDeclaredMethod("modelLoaded").insertBefore("{ if(this.wurmRailIsTrackModel()) {"
+        scenery.getDeclaredMethod("modelLoaded").insertBefore("{ org.wurmrail.shared.TrestlePanel panel=this.wurmRailCurvedPanel();"
+                +" if(panel!=null) { $1=$1.wurmRailPrivateTerrainCopy(); org.wurmrail.client.RailTrackTerrain.deformCurved($1,panel); }"
+                +" else if(this.wurmRailIsTrackModel()) {"
                 +" $1=$1.wurmRailPrivateTerrainCopy();"
                 +" if($1.getModelData() instanceof com.wurmonline.client.renderer.model.collada.AbstractColladaModelData) {"
                 +" com.wurmonline.client.renderer.model.collada.importer.ColladaGeometry[] parts="

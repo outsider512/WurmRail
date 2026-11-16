@@ -14,7 +14,7 @@ public final class RailModelHooks {
             CtClass item = HookManager.getInstance().getClassPool().get("com.wurmonline.server.items.Item");
             item.getDeclaredMethod("getModelName").insertBefore(
                     "{ if (org.wurmrail.RailModelRegistry.isCustomTemplate(this.getTemplateId())) {"
-                    + " return org.wurmrail.RailModelRegistry.modelName(this.getTemplateId(),"
+                    + " return org.wurmrail.RailModelRegistry.modelName(this.getWurmId(), this.getTemplateId(),"
                     + " this.getAuxData(), this.getData1()); } }");
             // VolaTile marks deck vehicles as floor zero. The moving-item
             // spawn packet must still carry Z for clients joining mid-crossing.

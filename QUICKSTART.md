@@ -1,12 +1,13 @@
-# WurmRail 2.31.0 — quick start
+# WurmRail 2.31.1 — quick start
 
 WurmRail needs a **server installation** and a **client installation on every
-player's PC**. Use the full `WurmRail-2.31.0.zip` to share both. See
+player's PC**. Download the server and client ZIPs from the release page. See
 [README.md](README.md) for terrain, permissions, advanced layouts and recovery.
 
-Update both the server and each player's client for walkable trestles.
-Existing custom trestles pick up the corrected deck grades on server restart.
-See [TRESTLES.md](TRESTLES.md) for surveying and construction.
+Update both the server and each player's client for curved deck models, walking
+surfaces and the zoomable survey map. Blank intermediate pole elevations fit
+automatically to the terrain. See [TRESTLES.md](TRESTLES.md) for surveying and
+construction.
 
 ## Install
 

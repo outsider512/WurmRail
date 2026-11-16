@@ -3,10 +3,9 @@ package org.wurmrail.shared;
 /** Walking surface of the same timber deck that the client renders. */
 public final class TrestleDeckSurface {
     private static final String MODEL_PREFIX = "model.wurmrail.trestledeck.";
-    private static final float HALF_WIDTH = .96f;
+    public static final float HALF_WIDTH = .96f;
     private static final float DIAGONAL_COMPONENT = (float)(1 / Math.sqrt(2));
-    private static final float CORNER_OVERHANG = HALF_WIDTH * DIAGONAL_COMPONENT;
-    private static final float STEP_UP = .75f;
+    static final float STEP_UP = .75f;
     private static final int[] AXIS_X = {0, 1, 1, 1};
     private static final int[] AXIS_Y = {-1, -1, 0, 1};
 
@@ -29,7 +28,7 @@ public final class TrestleDeckSurface {
         return surface <= feet + STEP_UP ? surface : Float.NaN;
     }
 
-    /** Include the neighboring tile where a diagonal plank overhangs a corner. */
+    /** Include neighboring tiles where a deck can overhang its own marker's tile. */
     public static float find(float x, float y, float feet, TileHeight lookup) {
         if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(feet)) return Float.NaN;
         int tileX = (int)Math.floor(x / 4), tileY = (int)Math.floor(y / 4);
@@ -48,7 +47,7 @@ public final class TrestleDeckSurface {
 
     public static int modelAxis(String model) {
         int start = MODEL_PREFIX.length();
-        if (!model.startsWith(MODEL_PREFIX) || model.length() <= start + 2 || model.charAt(start + 1) != '.')
+        if (model == null || !model.startsWith(MODEL_PREFIX) || model.length() <= start + 2 || model.charAt(start + 1) != '.')
             return -1;
         int axis = model.charAt(start) - '0';
         return axis >= 0 && axis < 4 ? axis : -1;
@@ -74,8 +73,8 @@ public final class TrestleDeckSurface {
 
     private static int neighbor(int tile, float position) {
         float offset = position - tile * 4;
-        if (offset <= CORNER_OVERHANG) return tile - 1;
-        if (offset >= 4 - CORNER_OVERHANG) return tile + 1;
+        if (offset <= HALF_WIDTH) return tile - 1;
+        if (offset >= 4 - HALF_WIDTH) return tile + 1;
         return tile;
     }
 }

@@ -6,7 +6,7 @@ param(
     [string]$ClientDir = (Join-Path $PSScriptRoot 'Wurm Unlimited/WurmLauncher'),
     [string]$ClientModLoaderDir = (Join-Path $PSScriptRoot 'tools/clientloader'),
     [string]$Python = 'python',
-    [string]$Version = '2.31.0',
+    [string]$Version = '2.31.1',
     [switch]$UseExistingAssets
 )
 

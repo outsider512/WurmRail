@@ -1,5 +1,17 @@
 # WurmRail release notes
 
+## 2.31.1
+
+- Curve through the marked intermediate range poles in order. The default
+  minimum radius is 5 tiles (20 metres), configurable down to 3 tiles (12 metres).
+- Fit blank pole heights to terrain within the grade limit, or enter fixed
+  heights to control the deck profile. The survey shows the ground and planned
+  rail height at each pole and includes a zoomable route map.
+- GM construction and removal support straight and curved spans. The removal
+  action clears the saved span even after its physical pieces are destroyed.
+- Save and reload variable-grade curved decks for trains and players on foot.
+  Previously built trestles keep their saved geometry.
+
 ## 2.31.0
 
 - Survey custom timber trestles with a dioptra and range pole. The survey

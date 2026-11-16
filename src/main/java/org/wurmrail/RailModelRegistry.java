@@ -1,10 +1,14 @@
 package org.wurmrail;
 
+import java.util.concurrent.ConcurrentHashMap;
+import org.wurmrail.shared.TrestlePanel;
+
 /** Primitive-only model lookup: safe for the loader to verify before game classes are patched. */
 public final class RailModelRegistry {
     private static volatile int locomotiveId, cartId, trackId, trackSectionId, pickupId, dropoffId, alignmentId, signalId;
     private static volatile int trestleDeckId, trestleBentId;
     private static final java.util.Set<Long> elevatedCars = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final ConcurrentHashMap<Long, TrestlePanel> curvedDecks = new ConcurrentHashMap<>();
     private RailModelRegistry() { }
 
     public static void register(int locomotive, int cart, int track) {
@@ -23,6 +27,15 @@ public final class RailModelRegistry {
     static void setElevatedCar(long id, boolean elevated) {
         if (elevated) elevatedCars.add(id);
         else elevatedCars.remove(id);
+    }
+
+    static TrestlePanel curvedDeck(long id) { return curvedDecks.get(id); }
+    static boolean registerCurvedDeck(long id, TrestlePanel panel) { return curvedDecks.putIfAbsent(id, panel) == null; }
+    static void forgetCurvedDeck(long id) { curvedDecks.remove(id); }
+
+    public static String modelName(long item, int templateId, byte connections, int kind) {
+        TrestlePanel panel = templateId == trestleDeckId ? curvedDeck(item) : null;
+        return panel == null ? modelName(templateId, connections, kind) : panel.modelName();
     }
 
     public static boolean isRailVehicleModel(String model) {

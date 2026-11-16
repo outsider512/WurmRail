@@ -218,13 +218,25 @@ public final class RailVehicleMotionClientSmoke {
         if(time<=10)return -5+(time-7)*5;return 10;
     }
     private static void curvedConsist() throws Exception {
+        curvedConsist(new ConsistPath(),6,"local rail bend");
+        org.wurmrail.core.TrestleAlignment hairpin = org.wurmrail.core.TrestleAlignment.waypoints(java.util.Arrays.asList(
+                mark(44,42),mark(82,42),mark(98,50),mark(106,66),mark(98,82),mark(82,90),mark(44,90)),
+                12,500,.5,2,6);
+        curvedConsist(new ConsistPath(hairpin),hairpin.waypointDistances().get(2)-10,"waypoint hairpin");
+    }
+
+    private static org.wurmrail.core.TrestleAlignment.Point mark(double x,double y) {
+        return new org.wurmrail.core.TrestleAlignment.Point(x,y,5);
+    }
+
+    private static void curvedConsist(ConsistPath path,double startDistance,String label) throws Exception {
         Class<?> listenerType=Class.forName("com.wurmonline.client.comm.ServerConnectionListenerClass");
         java.lang.reflect.Method allocate=RailVehicleTerrainClientSmoke.class.getDeclaredMethod("allocate",Class.class);allocate.setAccessible(true);
-        ConsistPath path=new ConsistPath();double worstPosition=0,worstGap=0;
+        double worstPosition=0,worstGap=0;
         for(String wagonModel:new String[]{"model.wurmrail.cart.","model.wurmrail.tankcar.","model.wurmrail.logcar."})
             for(int engineRate:new int[]{4,20})for(int wagonRate:new int[]{4,20}) {
             RailVehicleTerrainClientSmoke.setupWorld(0,0,5,0,0,5);
-            float[] front=path.pose(6),rear=path.pose(2);
+            float[] front=path.pose(startDistance),rear=path.pose(startDistance-4);
             CreatureCellRenderable engine=vehicle("model.wurmrail.locomotive.",0,front[0],front[1],5,180-front[2]);
             CreatureCellRenderable wagon=vehicle(wagonModel,0,rear[0],rear[1],5,180-rear[2]);
             Object listener=allocate.invoke(null,listenerType);set(listener,"world",CellRenderable.world);
@@ -238,11 +250,11 @@ public final class RailVehicleMotionClientSmoke {
             for(int frame=0;frame<=60*14;frame++) {
                 double time=frame/60.0;
                 while(nextEngine<=time+.00000001) {
-                    float[] p=path.pose(6+curveTravel(nextEngine));
+                    float[] p=path.pose(startDistance+curveTravel(nextEngine));
                     nativeConsistPacket(listener,engine,p[0],p[1],p[2],start+Math.round(nextEngine*1e9));nextEngine+=1.0/engineRate;
                 }
                 while(nextWagon<=time+.00000001) {
-                    float[] p=path.pose(2+curveTravel(nextWagon));
+                    float[] p=path.pose(startDistance-4+curveTravel(nextWagon));
                     nativeConsistPacket(listener,wagon,p[0],p[1],p[2],start+Math.round(nextWagon*1e9));nextWagon+=1.0/wagonRate;
                 }
                 set(CellRenderable.world,"wurmRailFrameNanos",start+Math.round(time*1e9));
@@ -251,13 +263,13 @@ public final class RailVehicleMotionClientSmoke {
                 double gap=Math.abs(path.distance(x,y)-path.distance(wx,wy)-4);worstGap=Math.max(worstGap,gap);
                 check(gap<.035,"quantized native packets retain arc-length consist spacing around the bend in either travel direction: "+gap);
                 for(int car=0;car<2;car++) {
-                    float[] expected=path.pose((car==0?6:2)+curveTravel(Math.max(0,time-.25)));
+                    float[] expected=path.pose(startDistance-4*car+curveTravel(Math.max(0,time-.25)));
                     double error=Math.hypot((car==0?x:wx)-expected[0],(car==0?y:wy)-expected[1]);worstPosition=Math.max(worstPosition,error);
                     check(error<.025,"a reversing curved consist follows each original centreline instead of forcing a straight visual coupling: "+error);
                 }
             }
         }
-        System.out.println("PASS native curved reversing consist: actual 8-bit packet headings and mixed 4/20 Hz streams; worst centreline error="+worstPosition+"m, worst 4m arc gap error="+worstGap+"m");
+        System.out.println("PASS native reversing consist on "+label+": actual 8-bit packet headings and mixed 4/20 Hz streams; worst centreline error="+worstPosition+"m, worst 4m arc gap error="+worstGap+"m");
     }
     private static double curveTravel(double time) {
         if(time<=4)return time*5;if(time<=5)return 20;if(time<=9)return 20-(time-5)*5;
@@ -265,16 +277,31 @@ public final class RailVehicleMotionClientSmoke {
     }
     private static final class ConsistPath {
         final java.util.List<double[]> points=new java.util.ArrayList<double[]>();double length;
+        final org.wurmrail.core.TrestleAlignment alignment;
         ConsistPath() {
+            alignment=null;
             add(54,70);add(54,56);
             for(int i=1;i<=512;i++){double t=i/512.0,u=1-t;add(54+2*t*t,56-4*t+2*t*t);}
             add(70,54);
+        }
+        ConsistPath(org.wurmrail.core.TrestleAlignment alignment) {
+            this.alignment=alignment;
+            int steps=(int)Math.ceil(alignment.length*8);
+            for (int step=0;step<=steps;step++) {
+                double distance=alignment.length*((double)step/steps);
+                org.wurmrail.core.TrestleAlignment.Point point=alignment.at(distance);
+                points.add(new double[]{point.x,point.y,distance});
+            }
         }
         void add(double x,double y) {
             if(!points.isEmpty()){double[] last=points.get(points.size()-1);length+=Math.hypot(x-last[0],y-last[1]);}
             points.add(new double[]{x,y,length});
         }
         float[] pose(double distance) {
+            if (alignment!=null) {
+                org.wurmrail.core.TrestleAlignment.Point point=alignment.at(distance);
+                return new float[]{(float)point.x,(float)point.y,alignment.headingAt(distance)};
+            }
             int lo=1,hi=points.size()-1;
             while(lo<hi){int mid=(lo+hi)/2;if(points.get(mid)[2]<distance)lo=mid+1;else hi=mid;}
             double[] a=points.get(lo-1),b=points.get(lo);double t=(distance-a[2])/(b[2]-a[2]);
@@ -286,7 +313,8 @@ public final class RailVehicleMotionClientSmoke {
             for(int i=1;i<points.size();i++) {
                 double[] a=points.get(i-1),b=points.get(i);double dx=b[0]-a[0],dy=b[1]-a[1];
                 double t=Math.max(0,Math.min(1,((x-a[0])*dx+(y-a[1])*dy)/(dx*dx+dy*dy)));
-                double error=Math.hypot(x-a[0]-t*dx,y-a[1]-t*dy);
+                double rx=x-a[0]-t*dx,ry=y-a[1]-t*dy;
+                double error=rx*rx+ry*ry;
                 if(error<best){best=error;result=a[2]+t*(b[2]-a[2]);}
             }return result;
         }

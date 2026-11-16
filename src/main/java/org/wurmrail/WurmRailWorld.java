@@ -184,16 +184,23 @@ public final class WurmRailWorld {
 
     static Item placeTrestlePiece(int template, Creature builder, float x, float y, float z,
                                   float rotation, int variant, int grade) throws Exception {
+        return placeTrestlePiece(template, builder, x, y, z, rotation, variant, grade, null);
+    }
+
+    static Item placeTrestlePiece(int template, Creature builder, float x, float y, float z,
+                                  float rotation, int variant, int grade, org.wurmrail.shared.TrestlePanel panel) throws Exception {
         Item item = ItemFactory.createItem(template, 50f, builder.getName());
         try {
             item.setPosXYZRotation(x, y, z, rotation);
             item.setAuxData((byte)variant);
             item.setData1(grade);
             item.setLastOwnerId(builder.getWurmId());
+            if (panel != null) RailModelRegistry.registerCurvedDeck(item.getWurmId(), panel);
             Zones.getZone((int)(x/4), (int)(y/4), true).addItem(item);
             item.savePosition();
             return item;
         } catch(Exception failure) {
+            RailModelRegistry.forgetCurvedDeck(item.getWurmId());
             Items.destroyItem(item.getWurmId());
             throw failure;
         }

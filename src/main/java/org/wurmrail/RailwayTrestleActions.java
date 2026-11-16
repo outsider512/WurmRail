@@ -17,7 +17,9 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
     enum Operation {
         START("Plan Railway Trestle"),
         MARK("Mark Trestle Destination"),
-        OPEN("Review Trestle Survey");
+        OPEN("Review Trestle Survey"),
+        WAYPOINT("Add Trestle Intermediate Pole"),
+        REMOVE("Remove Railway Trestle");
 
         final String label;
         Operation(String label) { this.label = label; }
@@ -26,6 +28,7 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
     interface Api {
         boolean canSurvey(Creature actor);
         boolean hasSurvey(Creature actor);
+        String trestleAt(int x, int y);
         void submit(Creature actor, Operation operation, long tool, int x, int y, long target);
     }
 
@@ -104,6 +107,7 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
         String message;
         if (!ownsTool(actor, tool, ItemList.dioptra)) message = "Activate a dioptra in your inventory to survey a railway trestle.";
         else if (!api.canSurvey(actor)) message = "Only railway builders can survey trestles.";
+        else if (operation == Operation.REMOVE) message = "A GM can remove a trestle by selecting a registered tile within eight metres.";
         else if (operation != Operation.START && !api.hasSurvey(actor)) message = "Plan a railway trestle before using this action.";
         else message = "Stand within eight metres of the survey target on the surface at ground level.";
         actor.getCommunicator().sendNormalServerMessage(message);
@@ -115,7 +119,10 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
     }
 
     private boolean acceptsTile(Creature actor, Item tool, int x, int y) {
-        return operation != Operation.MARK && ownsTool(actor, tool, ItemList.dioptra)
+        if (operation == Operation.REMOVE)
+            return actor != null && actor.getPower() >= 2 && ownsTool(actor,tool,ItemList.dioptra)
+                    && reachable(actor,x,y) && api.trestleAt(x,y) != null;
+        return operation != Operation.MARK && operation != Operation.WAYPOINT && ownsTool(actor, tool, ItemList.dioptra)
                 && api.canSurvey(actor) && reachable(actor, x, y)
                 && (operation != Operation.OPEN || api.hasSurvey(actor));
     }
@@ -125,10 +132,12 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
                 || !target.isOnSurface() || target.getFloorLevel() != 0 || target.getBridgeId() != -10L)
             return false;
         int x = target.getTileX(), y = target.getTileY();
-        if (operation == Operation.MARK)
+        if (operation == Operation.MARK || operation == Operation.WAYPOINT)
             return target.getTemplateId() == ItemList.rangePole && api.hasSurvey(actor) && api.canSurvey(actor)
                     && ownsTool(actor, tool, ItemList.dioptra) && reachable(actor, x, y);
-        return target.getTemplateId() == WurmRailWorld.trackTemplateId && acceptsTile(actor, tool, x, y);
+        return (target.getTemplateId() == WurmRailWorld.trackTemplateId
+                || operation == Operation.REMOVE && target.getTemplateId() == WurmRailWorld.trestleDeckTemplateId)
+                && acceptsTile(actor, tool, x, y);
     }
 
     static boolean ownsTool(Creature actor, Item item, int template) {

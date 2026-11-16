@@ -13,16 +13,20 @@ public final class TrestleWalkingClientHooks {
 
     public static void install(ClassPool pool) throws Exception {
         String surface = "org.wurmrail.shared.TrestleDeckSurface";
+        String panel = "org.wurmrail.shared.TrestlePanel";
         CtClass packet = pool.get("com.wurmonline.client.renderer.GroundItemData");
         packet.addField(CtField.make("private int wurmRailDeckAxis=-1;",packet));
         packet.addField(CtField.make("private int wurmRailDeckGrade;",packet));
+        packet.addField(CtField.make("private " + panel + " wurmRailPanel;",packet));
         packet.getDeclaredConstructors()[0].insertAfter(
                 "{ int axis=" + surface + ".modelAxis($2); if(axis>=0) {"
                 + " try { this.wurmRailDeckGrade=" + surface + ".modelGrade($2); this.wurmRailDeckAxis=axis;"
-                + " if($14==0 && $19<=0L && $21==-10L) this.scale=1f; }"
-                + " catch(java.lang.RuntimeException malformedDeck) {} } }");
+                + " } catch(java.lang.RuntimeException malformedDeck) {} }"
+                + " this.wurmRailPanel=" + panel + ".fromModel($2);"
+                + " if((this.wurmRailDeckAxis>=0 || this.wurmRailPanel!=null) && $14==0 && $19<=0L && $21==-10L) this.scale=1f; }");
         packet.addMethod(CtNewMethod.make("public int wurmRailDeckAxis() { return this.wurmRailDeckAxis; }",packet));
         packet.addMethod(CtNewMethod.make("public int wurmRailDeckGrade() { return this.wurmRailDeckGrade; }",packet));
+        packet.addMethod(CtNewMethod.make("public " + panel + " wurmRailCurvedPanel() { return this.wurmRailPanel; }",packet));
 
         CtClass matrix = pool.get("com.wurmonline.client.renderer.Matrix");
         matrix.addMethod(CtNewMethod.make("public void wurmRailSlope(float x,float y) {"
@@ -39,11 +43,14 @@ public final class TrestleWalkingClientHooks {
         ground.addMethod(CtNewMethod.make("protected boolean wurmRailUsesDeckMatrix() {"
                 + " return this.item!=null && this.item.wurmRailDeckAxis()>=0 && this.item.getLayer()==0"
                 + " && this.item.getParent()==-10L && this.item.getBridgeId()<=0L; }",ground));
+        ground.addMethod(CtNewMethod.make("protected " + panel + " wurmRailCurvedPanel() {"
+                + " return this.item!=null && this.item.getLayer()==0 && this.item.getParent()==-10L"
+                + " && this.item.getBridgeId()<=0L ? this.item.wurmRailCurvedPanel() : null; }",ground));
         ground.addMethod(CtNewMethod.make("protected void wurmRailDeckLoaded() {"
-                + " if(this.wurmRailUsesDeckMatrix()) this.updateModelMatrix(); }",ground));
+                + " if(this.wurmRailUsesDeckMatrix() || this.wurmRailCurvedPanel()!=null) this.updateModelMatrix(); }",ground));
         String slopes = "float sx=" + surface + ".slopeX(this.item.wurmRailDeckAxis(),this.item.wurmRailDeckGrade());"
                 + " float sy=" + surface + ".slopeY(this.item.wurmRailDeckAxis(),this.item.wurmRailDeckGrade());";
-        ground.getDeclaredMethod("updateModelMatrix").insertBefore("{ if(this.wurmRailUsesDeckMatrix()) {"
+        ground.getDeclaredMethod("updateModelMatrix").insertBefore("{ if(this.wurmRailUsesDeckMatrix() || this.wurmRailCurvedPanel()!=null) {"
                 + " this.setOffsetScale(0f); this.h=this.item.getH(); this.pitch=0f; this.roll=0f; } }");
         ground.getDeclaredMethod("updateModelMatrix").insertAfter("{ if(this.wurmRailUsesDeckMatrix()) {"
                 + slopes + " this.worldModel.wurmRailSlope(sx,sy); this.renderModel.wurmRailSlope(sx,sy); } }");
@@ -61,10 +68,10 @@ public final class TrestleWalkingClientHooks {
         String groundItem = "$1 instanceof com.wurmonline.client.renderer.cell.GroundItemCellRenderable";
         renderer.getDeclaredMethod("addRenderable").insertAfter("{ if(" + groundItem
                 + ") { com.wurmonline.client.renderer.GroundItemData item=" + item + ";"
-                + " if(item.wurmRailDeckAxis()>=0) this.wurmRailDecks.add(item,item.wurmRailDeckAxis(),item.wurmRailDeckGrade()); } }");
+                + " this.wurmRailDecks.add(item,item.wurmRailDeckAxis(),item.wurmRailDeckGrade(),item.wurmRailCurvedPanel()); } }");
         renderer.getDeclaredMethod("removeRenderable").insertBefore("{ if(" + groundItem
                 + ") { com.wurmonline.client.renderer.GroundItemData item=" + item + ";"
-                + " if(item.wurmRailDeckAxis()>=0) this.wurmRailDecks.remove(item); } }");
+                + " if(item.wurmRailDeckAxis()>=0 || item.wurmRailCurvedPanel()!=null) this.wurmRailDecks.remove(item); } }");
         renderer.getDeclaredMethod("clear").insertAfter("{ this.wurmRailDecks.clear(); }");
         renderer.addInterface(pool.get("org.wurmrail.shared.TrestleDeckSurface$TileHeight"));
         renderer.addMethod(CtNewMethod.make("public float sample(int tx,int ty,float x,float y,float feet) {"

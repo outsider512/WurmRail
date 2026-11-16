@@ -36,6 +36,7 @@ def main():
     expected.update(f"model.wurmrail.signal.{direction}.{aspect}" for direction in range(8) for aspect in ["red","green"])
     expected.update(f"model.wurmrail.{kind}.{i}" for kind in ["track","junction","station"] for i in range(256))
     expected.update(f"model.wurmrail.trestledeck.{axis}" for axis in range(4))
+    expected.add("model.wurmrail.trestlecurve")
     expected.update(f"model.wurmrail.trestlebent.{height}" for height in [1,2,4,8,16,32])
     require(set(manifest["models"])==expected,"manifest must cover vehicles and all 256 masks for each track kind")
     with zipfile.ZipFile(pack) as z:

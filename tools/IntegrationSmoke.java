@@ -106,6 +106,12 @@ public final class IntegrationSmoke {
                     .setBody("{ RailwayUiSmoke.captureSurveyBml($5,$9); }");
             fixturePool.get("com.wurmonline.server.players.PlayerCommunicatorQueued")
                     .getDeclaredMethod("sendBml").insertBefore("{ RailwayUiSmoke.captureSurveyBml($5,$9); }");
+            fixturePool.get("com.wurmonline.server.players.PlayerCommunicatorQueued")
+                    .getMethod("sendAddEffect","(JSFFFB)V")
+                    .insertBefore("{ RailwayUiSmoke.captureSurveyMarker($1,$2,$3,$4,$5,$6); }");
+            fixturePool.get("com.wurmonline.server.players.PlayerCommunicatorQueued")
+                    .getMethod("sendRemoveEffect","(J)V")
+                    .insertBefore("{ RailwayUiSmoke.captureSurveyMarkerRemoval($1); }");
             for (javassist.CtMethod m : fixturePool.get("com.wurmonline.server.players.PlayerCommunicatorQueued")
                     .getDeclaredMethods("sendNormalServerMessage"))
                 m.insertBefore("{ RailwayUiSmoke.captureSurveyMessage($1); }");
@@ -471,6 +477,7 @@ public final class IntegrationSmoke {
             RailwayUiSmoke.run();
             RailwayUiSmoke.runTrestleSurvey();
             RailwayUiSmoke.runElevatedMotion();
+            RailwayUiSmoke.runCurvedMotion();
             TrackMaterialsSmoke.run();
             RailwayRuntimeSmoke.run();
             TrackCornerRuntimeSmoke.run();

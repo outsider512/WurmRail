@@ -5,6 +5,7 @@ import com.wurmonline.server.items.Item;
 import com.wurmonline.server.zones.VolaTile;
 import com.wurmonline.server.zones.Zones;
 import org.wurmrail.shared.TrestleDeckSurface;
+import org.wurmrail.shared.TrestlePanel;
 
 /** Finds the exposed top of an installed deck using the native ground items. */
 public final class TrestleWalkingWorld {
@@ -32,9 +33,14 @@ public final class TrestleWalkingWorld {
         float height = Float.NaN;
         for (Item item : tile.getItems()) {
             if (item.getTemplateId() == WurmRailWorld.trestleDeckTemplateId && item.getParentId() == -10L
-                    && item.getOwnerId() == -10L && item.onBridge() == -10L)
-                height = TrestleDeckSurface.higher(height, TrestleDeckSurface.height(x, y, feet,
-                        item.getPosX(), item.getPosY(), item.getPosZ(), item.getAuxData() & 3, item.getData1()));
+                    && item.getOwnerId() == -10L && item.onBridge() == -10L) {
+                TrestlePanel panel = RailModelRegistry.curvedDeck(item.getWurmId());
+                float z = item.getPosZ();
+                float surface = panel == null ? TrestleDeckSurface.height(x, y, feet,
+                        item.getPosX(), item.getPosY(), z, item.getAuxData() & 3, item.getData1())
+                        : z + panel.height(x - item.getPosX(), y - item.getPosY(), feet - z);
+                height = TrestleDeckSurface.higher(height, surface);
+            }
         }
         return height;
     }

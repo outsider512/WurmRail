@@ -23,6 +23,7 @@ import com.wurmonline.client.util.SecureStrings;
 import com.wurmonline.math.Transform;
 import com.wurmonline.math.Quaternion;
 import com.wurmonline.math.Vector3f;
+import org.wurmrail.shared.TrestlePanel;
 import java.io.File;
 import java.io.InputStream;
 import java.lang.reflect.*;
@@ -78,7 +79,69 @@ public final class RailTrackTerrainClientSmoke {
         check(Arrays.deepEquals(original,snapshot(base)),"trestle instance leaves its shared mesh untouched");
         trestleWalking(rail);
         trestleVisualSeams(resources);
+        curvedTrestle(resources);
         System.out.println("PASS native trestle deck packet height, grade deformation and shared-mesh isolation");
+    }
+
+    private static void curvedTrestle(Resources resources) throws Exception {
+        String baseName = "model.wurmrail.trestlecurve";
+        TrestlePanel first = curvePanel(0), next = curvePanel(1);
+        String firstName = first.modelName(), nextName = next.modelName();
+        check(firstName.length() < 256 && resources.getResource(baseName).equals(resources.getResource(firstName)),
+                "the stock model lookup resolves a curved panel's full packet name");
+        ModelResourceWrapper base = load(resources,baseName);
+        float[][] original = snapshot(base);
+        com.wurmonline.client.renderer.model.ModelResourceLoader.storeWeakReference(
+                base.getModelData(),base.getResourceUrl(),base);
+        GroundItemCellRenderable a = trestlePacket(970000025L,firstName,46,46,41);
+        GroundItemCellRenderable b = trestlePacket(970000026L,nextName,50,46,43);
+        check(a.getModelWrapper()!=b.getModelWrapper() && a.getModelWrapper()!=base
+                        && Arrays.deepEquals(original,snapshot(base)), "curved panels deform private mesh copies");
+        CellRenderer renderer = CellRenderable.world.getCellRenderer();
+        renderer.addRenderable(a);
+        renderer.addRenderable(b);
+        org.wurmrail.shared.TrestleDeckSurface.TileHeight lookup =
+                (org.wurmrail.shared.TrestleDeckSurface.TileHeight)(Object)renderer;
+        for (int i = 0; i <= 64; i++) {
+            float offset = i / 8f;
+            float expected = 40 + offset * .5f;
+            float height = org.wurmrail.shared.TrestleDeckSurface.find(44 + offset,46 + .025f * offset * offset,expected,lookup);
+            check(Math.abs(height-expected)<.003f,"client walking follows the curved grade across the seam at "+offset);
+        }
+        for (GroundItemCellRenderable item : new GroundItemCellRenderable[]{a,b}) {
+            float edge = item == a ? 1 : 0;
+            TrestlePanel panel = item == a ? first : next;
+            for (float lateral : new float[]{-.96f,.96f,-.6025f,.6025f}) {
+                float[] point = panel.vertex(edge,lateral);
+                Vector3f desired = new Vector3f(point[0]+item.getXPos(),point[2]+item.getHPos()
+                        +(Math.abs(lateral)<.9f ? .21f : 0),point[1]+item.getYPos());
+                float closest = Float.POSITIVE_INFINITY;
+                for (TriangleMesh mesh : meshes(item.getModelWrapper())) {
+                    FloatBuffer positions = mesh.getVertexBuffer();
+                    for (int at = 0; at < positions.limit(); at += 3) {
+                        Vector3f vertex = new Vector3f(positions.get(at),positions.get(at+1),positions.get(at+2));
+                        item.getWorldModelMatrix().transformInPlace(vertex);
+                        closest = Math.min(closest,distance(new float[]{vertex.x,vertex.y,vertex.z},
+                                new float[]{desired.x,desired.y,desired.z}));
+                    }
+                }
+                check(closest<.001f,"native curved railhead and deck share the walking panel's exact seam vertices: "+closest);
+            }
+        }
+        renderer.removeRenderable(a,false);
+        renderer.removeRenderable(b,false);
+        check(Float.isNaN(org.wurmrail.shared.TrestleDeckSurface.find(48,46.4f,42,lookup)),
+                "removing curved panels clears client collision");
+        System.out.println("PASS native curved deck model, rendered seams, sloped walking surface and removal");
+    }
+
+    private static TrestlePanel curvePanel(int index) {
+        double[][] rows = new double[TrestlePanel.INTERVALS + 1][4];
+        for (int row = 0; row < rows.length; row++) {
+            double x = row / 4.0 - 2, offset = x + 2 + 4 * index;
+            rows[row] = new double[]{x,.025 * offset * offset,x * .5,Math.atan(.05 * offset)};
+        }
+        return TrestlePanel.of(rows);
     }
 
     private static void trestleVisualSeams(Resources resources) throws Exception {

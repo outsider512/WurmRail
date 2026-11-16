@@ -1,6 +1,6 @@
-# WurmRail 2.31.0
+# WurmRail 2.31.1
 
-[Download WurmRail 2.31.0](https://github.com/outsider512/WurmRail/releases/tag/v2.31.0).
+[Download WurmRail 2.31.1 for server and client](https://github.com/outsider512/WurmRail/releases/tag/v2.31.1).
 
 A steam railway for Wurm Unlimited: build tracks, couple passenger and cargo
 wagons, drive with friends, or run repeating station routes with signals and
@@ -16,8 +16,9 @@ release changes and [THIRD-PARTY.md](THIRD-PARTY.md) for dependency notices.
   seats per vehicle. The default maximum is eight vehicles per train.
 - Eight compass directions, straight and diagonal track, 45- and 90-degree
   bends, physical bidirectional junctions, and surface-to-cave railways.
-- [Custom railway trestles](TRESTLES.md) for trains and players on foot, with
-  surveyed deck heights and a configurable grade limit.
+- Walkable straight and curved timber trestles. Curves pass through each
+  surveyed pole, and the planner fits the deck to the terrain within the
+  configured grade limit. [Trestle guide](TRESTLES.md)
 - Manual power, stop, reverse and speed controls. Forward and reverse have the
   same acceleration and speed limit: 5 m/s by default.
 - Combined stations that drop off passengers and pick up waiting players.
@@ -58,12 +59,11 @@ modloaders are not bundled; use your own licensed game installation.
 
 | Archive | Contents | Use |
 | --- | --- | --- |
-| `WurmRail-2.31.0.zip` | Server mod, client support/model pack, both installers and guides | First installation or sharing the complete release |
-| `WurmRail-2.31.0-server.zip` | Server mod, server installer and guides | Server installation/update |
-| `WurmRail-2.31.0-client.zip` | Client support/model pack, client installer and guides | Installation on each player's PC |
+| `WurmRail-2.31.1-server.zip` | Server mod, server installer and guides | Server installation/update |
+| `WurmRail-2.31.1-client.zip` | Client support/model pack, client installer and guides | Installation on each player's PC |
 
-Install the matching server and client updates for walkable trestles.
-Every player needs the client update for sloped deck models and on-foot movement.
+Install the matching server and client updates for the survey map, sloped deck
+models and on-foot movement.
 Fully close and restart Wurm after updating. Preserve a complete world backup
 before upgrading.
 
@@ -71,6 +71,21 @@ The client keeps the locomotive and following cars on the same playback
 timeline during slow game ticks and native visibility/metadata refreshes.
 Forward, reverse, curves, terrain tilt and rider cameras use the original
 authoritative positions; no visual coupling offsets are manufactured.
+
+## Surveying a timber trestle
+
+Activate a dioptra and choose **Plan Railway Trestle** at the start. Add any
+intermediate range poles in travel order, then mark the destination. The zoomable
+survey map shows the start, destination and numbered poles. Blank pole-height
+fields fit to terrain automatically. Enter metres to fix a height and choose
+**Update preview** to recalculate the deck.
+
+GMs can build straight and curved trestles or remove an entire registered span,
+including one whose physical pieces were destroyed. Existing trestles keep
+their saved geometry. New configurations default to a **50% maximum grade** and
+a **5-tile minimum curve radius**, configurable down to **3 tiles**. Existing
+configurations keep their radius setting, with values below 3 raised to 3.
+See the survey actions and settings in the [trestle guide](TRESTLES.md).
 
 ## Windows installation
 
@@ -881,7 +896,7 @@ Native checks supplement a graphical multiplayer playtest; they do not open
 a live game window.
 
 To recheck the share archives and their checksum files, run
-`python tools/verify_release.py 2.31.0` from the source workspace.
+`python tools/verify_release.py 2.31.1` from the source workspace.
 
 Integrations use absolute compass directions (N=0 through NW=7).
 `RailNetwork.getJunctionAlignment`, `setJunctionAlignment`,

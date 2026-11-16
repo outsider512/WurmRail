@@ -10,6 +10,7 @@ import com.wurmonline.shared.constants.BridgeConstants.BridgeState;
 import com.wurmonline.client.renderer.model.collada.AbstractColladaModelData;
 import com.wurmonline.client.renderer.model.collada.importer.ColladaGeometry;
 import com.wurmonline.client.renderer.model.collada.importer.TriangleMesh;
+import org.wurmrail.shared.TrestlePanel;
 import java.nio.FloatBuffer;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -30,6 +31,44 @@ public final class RailTrackTerrain {
     private float base;
 
     public float getBase() {return base;}
+
+    public static void deformCurved(ModelResourceWrapper wrapper, TrestlePanel panel) {
+        if (!(wrapper.getModelData() instanceof AbstractColladaModelData)) return;
+        AbstractColladaModelData data = (AbstractColladaModelData)wrapper.getModelData();
+        for (ColladaGeometry geometry : data.getModel().getGeometryArray()) {
+            for (TriangleMesh mesh : geometry.getTriangleMeshArray()) {
+                own(mesh);
+                FloatBuffer positions = mesh.getVertexBuffer(), normals = mesh.getNormalBuffer();
+                for (int index = 0; index < positions.limit(); index += 3) {
+                    float fraction = (positions.get(index) + 2) / 4;
+                    float lateral = positions.get(index + 2);
+                    float[] point = panel.vertex(fraction, lateral);
+                    positions.put(index, point[0]);
+                    positions.put(index + 1, positions.get(index + 1) + point[2]);
+                    positions.put(index + 2, point[1]);
+                    if (normals != null) conformNormal(normals, index, panel, fraction);
+                }
+                mesh.updateVBO();
+            }
+        }
+        refreshBounds(data);
+    }
+
+    private static void conformNormal(FloatBuffer normals, int index, TrestlePanel panel, float fraction) {
+        float[] a = panel.vertex(fraction - 1f / TrestlePanel.INTERVALS, 0);
+        float[] b = panel.vertex(fraction + 1f / TrestlePanel.INTERVALS, 0);
+        float dx = b[0] - a[0], dz = b[1] - a[1];
+        float length = (float)Math.hypot(dx, dz);
+        if (length == 0) return;
+        float tangent = normals.get(index) - normals.get(index + 1) * (b[2] - a[2]) / length;
+        float up = normals.get(index + 1), across = normals.get(index + 2);
+        float x = (dx * tangent - dz * across) / length, z = (dz * tangent + dx * across) / length;
+        float magnitude = (float)Math.sqrt(x * x + up * up + z * z);
+        if (magnitude == 0) return;
+        normals.put(index, x / magnitude);
+        normals.put(index + 1, up / magnitude);
+        normals.put(index + 2, z / magnitude);
+    }
 
     public boolean update(World world,ModelResourceWrapper model,String name,
             float x,float y,float yaw,float scale,int layer,long now) {

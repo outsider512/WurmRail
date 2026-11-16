@@ -709,6 +709,21 @@ def trestle_deck(axis):
     return mesh
 
 
+def trestle_curve():
+    """Subdivided deck in local coordinates for the client's surveyed-curve deformation."""
+    mesh = Mesh()
+    points = [(i / 4 - 2, 0, 0) for i in range(17)]
+    for offset in [-.57, .57]:
+        sweep(mesh, points, offset, .28, -.445, .37, "wooddark")
+    sweep(mesh, points, 0, 1.92, -.13, .13, "wood")
+    add_rail_path(mesh, points, sleepers=False)
+    # The deck itself is the rail bed. Plates subdivided with the deck remain
+    # clean even where the route only crosses a small corner of the tile.
+    for x in [-1.625, -.625, .375, 1.375]:
+        mesh.box((x, 0, .0525), (.25, 1.65, .105), "wooddark")
+    return mesh
+
+
 def trestle_bent(height):
     """A square-ended braced timber stage, with its origin at the top."""
     mesh = Mesh()
@@ -985,6 +1000,7 @@ def main():
             save("model.wurmrail.signal."+str(approach)+"."+aspect,"signal_"+str(approach)+"_"+aspect,railway_signal(approach,green))
     for axis in range(4):
         save("model.wurmrail.trestledeck."+str(axis), "trestledeck_"+str(axis), trestle_deck(axis))
+    save("model.wurmrail.trestlecurve", "trestlecurve", trestle_curve())
     for height in [1,2,4,8,16,32]:
         save("model.wurmrail.trestlebent."+str(height), "trestlebent_"+str(height), trestle_bent(height))
     for mask in range(256):
