@@ -258,10 +258,11 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
         }, integer(p.getProperty("trestleMaxTiles", "250"), 1, 500),
                 number(p.getProperty("trestleMaxGradientPercent", "50"), 0, 100) / 100,
                 integer(p.getProperty("trestleBentSpacingTiles", "3"), 1, 50),
-                Math.max(3, integer(p.getProperty("trestleMinCurveRadiusTiles", "5"), 1, 500)));
+                Math.max(3, integer(p.getProperty("trestleMinCurveRadiusTiles", "3"), 1, 500)));
     }
 
     @Override public void init() {
+        RailConsistTransport.register();
         RailwayTrestleActions.register(new RailwayTrestleActions.Api() {
             @Override public boolean canSurvey(Creature actor) {
                 return actor.getPower() >= 2 || allowed(builders, actor.getName());
@@ -362,7 +363,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 network.maxCars = Math.max(network.maxCars,t.carIds.size());
                 t.maxSpeed = Math.min(t.maxSpeed, speedLimit);
                 for (Pose pose : t.poses)
-                    RailModelRegistry.setElevatedCar(pose.carId,Float.isFinite(pose.elevation));
+                    RailModelRegistry.setElevatedCarHeight(pose.carId,pose.elevation);
             }
             refreshTrackVisuals();
             try {
@@ -423,6 +424,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
         passengerService.refreshPlayers();
         try {
             Map<String, List<Pose>> moved = network.tick(elapsed);
+            WurmRailWorld.MotionBatch batch = new WurmRailWorld.MotionBatch(now);
             for (Map.Entry<String,List<Pose>> entry : moved.entrySet()) {
                 Train t = network.trains.get(entry.getKey());
                 if(t.status.equals("Movement blocked by the world")&&motionErrors.containsKey(t.carIds.get(0)))
@@ -432,15 +434,19 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 if(restoring&&!validateMotion(entry.getValue())) {
                     network.stop(t.name); t.status="Restore blocked: "+validationError; continue;
                 }
+                boolean changed = false;
                 for (Pose pose : entry.getValue()) {
                     Pose old=appliedPoses.get(pose.carId);
                     if(old!=null&&old.x==pose.x&&old.y==pose.y&&old.rotation==pose.rotation&&old.layer==pose.layer
                             &&Float.compare(old.elevation,pose.elevation)==0) continue;
-                    WurmRailWorld.moveCar(pose,old);
+                    WurmRailWorld.moveCar(pose,old,batch);
                     appliedPoses.put(pose.carId,pose);
+                    changed = true;
                 }
+                if (changed) batch.addConsist(entry.getValue());
             }
             if (System.currentTimeMillis() - lastSave >= 5000) save();
+            batch.send();
             movementCommitted=true;
         } catch (Exception e) {
             // A following train may have entered a block released earlier this tick.
@@ -449,15 +455,22 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
             for(Train t:network.trains.values()) {
                 network.stop(t.name);scheduledServices.record(t,false);t.status="Stopped after a world error; check server log";
             }
-            for(Checkpoint snapshot:checkpoints.values()) for(Pose pose:snapshot.poses) {
-                try {
-                    WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId));
-                    appliedPoses.put(pose.carId,pose);
-                } catch(Exception restoreError) {
-                    appliedPoses.remove(pose.carId);
-                    LOG.log(Level.WARNING,"Could not restore rail vehicle "+pose.carId+"; its train remains stopped",restoreError);
+            WurmRailWorld.MotionBatch restored = new WurmRailWorld.MotionBatch();
+            for(Checkpoint snapshot:checkpoints.values()) {
+                boolean complete = true;
+                for(Pose pose:snapshot.poses) {
+                    try {
+                        WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId),restored);
+                        appliedPoses.put(pose.carId,pose);
+                    } catch(Exception restoreError) {
+                        complete = false;
+                        appliedPoses.remove(pose.carId);
+                        LOG.log(Level.WARNING,"Could not restore rail vehicle "+pose.carId+"; its train remains stopped",restoreError);
+                    }
                 }
+                if (complete) restored.addConsist(snapshot.poses);
             }
+            restored.send();
             LOG.log(Level.SEVERE, "Rail poll failed; restored the previous tick and stopped all trains", e);
         }
         if(movementCommitted) {
@@ -567,10 +580,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
                 restore(poses);
             }
             @Override public void restore(List<Pose> poses) throws Exception {
-                for(Pose pose:poses) {
-                    WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId));
-                    appliedPoses.put(pose.carId,pose);
-                }
+                restoreTrainPoses(poses);
             }
         });
         passengerService=new RailwayPassengerService(network,()->passengerStations,new RailwayPassengerService.World() {
@@ -1085,10 +1095,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
         if (network.nodes.size() + steps - 1 + (plan.start.rail == null ? 1 : 0)
                 + (plan.end.rail == null ? 1 : 0) > maxNodes)
             throw new IllegalArgumentException("Track node limit reached.");
-        for (RailwayTrestleSurvey.Site endpoint : Arrays.asList(plan.start, plan.end)) {
-            if (Math.abs(endpoint.point.z-WurmRailWorld.groundHeight(endpoint.point.x,endpoint.point.y,0)) > .05)
-                throw new IllegalArgumentException("Both ends of the trestle must meet their ground approaches.");
-        }
+        RailwayTrestleSurvey.validateApproaches(plan.start,plan.end,alignment);
         List<int[]> tiles = new ArrayList<>();
         tiles.add(new int[]{plan.start.x, plan.start.y});
         for (int i = 1; i < steps; i++) {
@@ -1547,10 +1554,7 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
     }
     private void applyPoses(Train t) throws Exception {
         checkTrainWorld(t);
-        for(Pose pose:t.poses) {
-            WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId));
-            appliedPoses.put(pose.carId,pose);
-        }
+        restoreTrainPoses(t.poses);
     }
     private void checkCar(Creature p,Item car,boolean emptySeats) {
         checkNear(p,car);
@@ -1930,7 +1934,13 @@ public final class WurmRailRuntime implements WurmServerMod, Configurable,
         tell(actor,"Direction reversed in manual driving. Power is off. Power on to back away; choose a station route to resume automatic service.");
     }
     private void restoreTrainPoses(List<Pose> poses) throws Exception {
-        for(Pose pose:poses) { WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId)); appliedPoses.put(pose.carId,pose); }
+        WurmRailWorld.MotionBatch batch = new WurmRailWorld.MotionBatch();
+        for (Pose pose : poses) {
+            WurmRailWorld.moveCar(pose,appliedPoses.get(pose.carId),batch);
+            appliedPoses.put(pose.carId,pose);
+        }
+        batch.addConsist(poses);
+        batch.send();
     }
     private void commitTrainRoute(Train train,List<String> stops,boolean start) throws Exception {
         if(train.speed>0.001)throw new IllegalArgumentException("Press STOP before changing a moving train's route.");

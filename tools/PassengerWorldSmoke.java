@@ -14,15 +14,26 @@ import com.wurmonline.server.players.DbPlayerInfo;
 import com.wurmonline.server.players.Player;
 import com.wurmonline.server.players.PlayerInfo;
 import com.wurmonline.server.players.PlayerCommunicatorQueued;
+import com.wurmonline.server.zones.VirtualZone;
+import com.wurmonline.server.zones.VolaTile;
 import com.wurmonline.server.zones.Zones;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.nio.ByteBuffer;
 import java.util.Queue;
+import java.util.Set;
+import org.gotti.wurmunlimited.modcomm.ModComm;
+import org.gotti.wurmunlimited.modcomm.ModCommHandler;
+import org.gotti.wurmunlimited.modcomm.PlayerModConnection;
 import org.wurmrail.RailwayPassengerWorld;
 import org.wurmrail.WurmRailWorld;
+import org.wurmrail.core.RailNetwork.Pose;
+import org.wurmrail.shared.RailConsistFrame;
 
 /** Actual Player, native seat/boarding and disembarking checks in the isolated synthetic world. */
 public final class PassengerWorldSmoke {
@@ -31,6 +42,8 @@ public final class PassengerWorldSmoke {
 
     public static void run() throws Exception {
         cargoShortcut();
+        mountedWagonMovement();
+        timedConsistForMountedClient();
         Player player=player(800000000L,130*4+3.9f,150*4+3.9f);
         Item engine=WurmRailWorld.spawnLocomotive(player,130*4+2,149*4+2,0);
         WurmRailWorld.moveCar(engine.getWurmId(),130*4+2.5f,149*4+1.5f,45,0);
@@ -71,6 +84,20 @@ public final class PassengerWorldSmoke {
         require(RailwayPassengerWorld.board(player,engine),"native railway boarding succeeds");
         require(player.getVehicle()==engine.getWurmId()&&vehicle.getSeatFor(player.getWurmId())!=null,
                 "native boarding assigns both vehicle identity and real seat occupancy");
+        Player second=player(800001024L,player.getPosX(),player.getPosY());
+        try {
+            // Simulate a second native boarding action with the same previously offered seat.
+            com.wurmonline.server.behaviours.VehicleBehaviour.addPassenger(second,vehicle,engine,0);
+            require(second.getVehicle()==engine.getWurmId()
+                        && vehicle.getSeatFor(player.getWurmId())==vehicle.seats[0]
+                        && vehicle.getSeatFor(second.getWurmId())==vehicle.seats[1]
+                        && vehicle.seats[0].offy!=vehicle.seats[1].offy,
+                    "a stale native seat request boards the second rider into a distinct passenger position");
+            require(RailwayPassengerWorld.disembarkTo(second,engine,130,150,0)
+                        && player.getVehicle()==engine.getWurmId()
+                        && vehicle.getSeatFor(player.getWurmId())==vehicle.seats[0],
+                    "the second passenger can disembark while the first stays in their own seat");
+        } finally { removePlayer(second); }
         require(!RailwayPassengerWorld.eligible(player),"already mounted passenger cannot be picked up a second time");
         require(nativeMenuCount(player,engine,332)==0&&nativeMenuCount(player,engine,333)==1,
                 "mounted passenger sees native Disembark instead of another boarding action");
@@ -92,6 +119,106 @@ public final class PassengerWorldSmoke {
         System.out.println("PASS actual-player native passenger eligibility, boarding, seat cleanup and platform placement ("
                 +assertions+" assertions)");
         System.out.println("PASS native contextual passenger menu: one Embark when a seat is free, no Board when mounted, Disembark and remount");
+    }
+
+    private static void mountedWagonMovement() throws Exception {
+        float x=558, y=602;
+        Player rider=player(800002048L,x,y);
+        Item wagon=WurmRailWorld.spawnCart(rider,x,y,0);
+        try {
+            require(WurmRailWorld.board(rider,wagon),"native Wurm boarding occupies the wagon seat");
+            require(Arrays.stream(rider.currentTile.getWatchers()).noneMatch(zone -> zone.getWatcher()==rider),
+                    "the mounted client in this fixture has no tile visibility watcher");
+            WurmRailWorld.moveCar(wagon.getWurmId(),x+.4,y-.2,45,0);
+            require(queuedPackets(rider).stream().filter(packet -> isWagonMove(packet,wagon)).count()==1,
+                    "the native connection receives one complete authoritative wagon pose even without a visibility watcher");
+            require(RailwayPassengerWorld.disembarkTo(rider,wagon,139,151,0),
+                    "the wagon's passenger can disembark normally");
+            WurmRailWorld.moveCar(wagon.getWurmId(),x+.8,y-.4,45,0);
+            require(queuedPackets(rider).stream().noneMatch(packet -> isWagonMove(packet,wagon)),
+                    "the wagon stops sending direct rider packets after its seat is cleared");
+        } finally {
+            Items.destroyItem(wagon.getWurmId());
+            removePlayer(rider);
+        }
+    }
+
+    private static boolean isWagonMove(byte[] packet,Item wagon) {
+        if (packet.length!=22 || packet[0]!=72) return false;
+        ByteBuffer pose=ByteBuffer.wrap(packet,1,packet.length-1);
+        return pose.getLong()==wagon.getWurmId() && pose.getFloat()==wagon.getPosZ()
+                && pose.getFloat()==wagon.getPosX() && pose.get()==32 && pose.getFloat()==wagon.getPosY();
+    }
+
+    private static void timedConsistForMountedClient() throws Exception {
+        float x=558, y=602;
+        Player rider=player(800002304L,x,y);
+        Item engine=WurmRailWorld.spawnLocomotive(rider,x-4,y,0);
+        Item wagon=WurmRailWorld.spawnCart(rider,x,y,0);
+        Item unannounced=WurmRailWorld.spawnCart(rider,x+4,y,0);
+        VolaTile engineTile=Zones.getOrCreateTile(engine.getTileX(),engine.getTileY(),true);
+        VolaTile unannouncedTile=Zones.getOrCreateTile(unannounced.getTileX(),unannounced.getTileY(),true);
+        Field watchers=VolaTile.class.getDeclaredField("watchers");
+        watchers.setAccessible(true);
+        Object originalEngine=watchers.get(engineTile), originalUnannounced=watchers.get(unannouncedTile);
+        try {
+            VirtualZone view=new VirtualZone(rider,0,0,wagon.getTileX(),wagon.getTileY(),3,true);
+            Field items=VirtualZone.class.getDeclaredField("items");
+            items.setAccessible(true);
+            items.set(view,new HashSet<>(Arrays.asList(engine,wagon)));
+            Set<VirtualZone> visible=new HashSet<>();
+            visible.add(view);
+            watchers.set(engineTile,visible);
+            watchers.set(unannouncedTile,visible);
+            require(WurmRailWorld.board(rider,wagon),"timed frame fixture occupies the wagon");
+
+            ModComm.serverStarted();
+            Player.class.getField("modConnection").set(rider,new PlayerModConnection());
+            byte[] name=RailConsistFrame.CHANNEL.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ByteBuffer offer=ByteBuffer.allocate(name.length+8);
+            offer.put((byte)2).put((byte)1).putInt(1).putShort((short)name.length).put(name).flip();
+            ModCommHandler.handlePacket(rider,offer);
+
+            long timestamp=System.nanoTime();
+            Class<?> type=Class.forName(WurmRailWorld.class.getName()+"$MotionBatch");
+            Constructor<?> constructor=type.getDeclaredConstructor(long.class);
+            constructor.setAccessible(true);
+            Object batch=constructor.newInstance(timestamp);
+            Method move=WurmRailWorld.class.getDeclaredMethod("moveCar",Pose.class,Pose.class,type);
+            Method add=type.getDeclaredMethod("addConsist",List.class);
+            Method send=type.getDeclaredMethod("send");
+            for (Method method : Arrays.asList(move,add,send)) method.setAccessible(true);
+            List<Pose> poses=Arrays.asList(new Pose(engine.getWurmId(),x-3.6f,y,45,0),
+                    new Pose(wagon.getWurmId(),x+.4f,y,45,0),new Pose(unannounced.getWurmId(),x+4.4f,y,45,0));
+            for (Pose pose : poses) move.invoke(null,pose,null,batch);
+            add.invoke(batch,poses);
+            send.invoke(batch);
+
+            List<byte[]> messages=queuedPackets(rider);
+            int wagonMove=-1, timedMove=-1;
+            RailConsistFrame frame=null;
+            for (int i=0;i<messages.size();i++) {
+                byte[] packet=messages.get(i);
+                if (isWagonMove(packet,wagon)) wagonMove=i;
+                if (packet.length>=16 && packet[0]==(byte)-100 && packet[1]==1) {
+                    require(frame==null,"observer receives one synchronized frame for the consist");
+                    timedMove=i;
+                    frame=RailConsistFrame.decode(ByteBuffer.wrap(packet,6,packet.length-6));
+                }
+            }
+            require(wagonMove>=0 && timedMove>wagonMove,"synchronized frame follows the native movement in the real player queue");
+            require(frame!=null && frame.serverNanos==timestamp && frame.poses.size()==2,
+                    "one shared server timestamp covers the rider's wagon and known locomotive, excluding an unannounced car");
+            require(frame.poses.get(0).id==engine.getWurmId() && frame.poses.get(1).id==wagon.getWurmId()
+                            && Math.abs(frame.poses.get(0).x-frame.poses.get(1).x+4)<.001,
+                    "the timed payload retains train order and full separation");
+            System.out.println("PASS negotiated ModComm consist: one queued frame after native movement, occupant and known locomotive, unannounced car excluded");
+        } finally {
+            watchers.set(engineTile,originalEngine);
+            watchers.set(unannouncedTile,originalUnannounced);
+            for (Item car : Arrays.asList(engine,wagon,unannounced)) Items.destroyItem(car.getWurmId());
+            removePlayer(rider);
+        }
     }
 
     private static int nativeMenuCount(Player actor,Item car,int action) throws Exception {
@@ -221,18 +348,39 @@ public final class PassengerWorldSmoke {
         return unsafe.getClass().getMethod("allocateInstance",Class.class).invoke(unsafe,type);
     }
     private static boolean queuedTeleportAt(Player player,float x,float y,float z) throws Exception {
-        Field queueField=PlayerCommunicatorQueued.class.getDeclaredField("MESSAGES_TO_PLAYERS");
-        queueField.setAccessible(true);
-        for(Object message:(Queue<?>)queueField.get(null)) {
-            java.lang.reflect.Method owner=message.getClass().getDeclaredMethod("getPlayerId"); owner.setAccessible(true);
-            if(((Long)owner.invoke(message)).longValue()!=player.getWurmId()) continue;
-            java.lang.reflect.Method bytes=message.getClass().getDeclaredMethod("getMessageBytes"); bytes.setAccessible(true);
-            byte[] packet=(byte[])bytes.invoke(message);
+        for (byte[] packet : queuedPackets(player)) {
             if(packet.length<21||packet[0]!=51) continue;
             ByteBuffer buffer=ByteBuffer.wrap(packet); buffer.get();
             if(buffer.getFloat()==x&&buffer.getFloat()==y&&Math.abs(buffer.getFloat()-z)<.01f) return true;
         }
         return false;
+    }
+
+    static boolean queuedMovingAnnouncementAt(Player player,long id,float z) throws Exception {
+        for (byte[] packet : queuedPackets(player)) {
+            if (packet.length<36 || packet[0]!=108) continue;
+            ByteBuffer buffer=ByteBuffer.wrap(packet);
+            buffer.get();
+            if (buffer.getLong()!=id) continue;
+            int modelLength=Byte.toUnsignedInt(buffer.get());
+            if (buffer.remaining()<modelLength+25) continue;
+            buffer.position(buffer.position()+modelLength+21);
+            if (Math.abs(buffer.getFloat()-z)<.0001f) return true;
+        }
+        return false;
+    }
+
+    private static java.util.List<byte[]> queuedPackets(Player player) throws Exception {
+        Field queueField=PlayerCommunicatorQueued.class.getDeclaredField("MESSAGES_TO_PLAYERS");
+        queueField.setAccessible(true);
+        java.util.List<byte[]> packets = new java.util.ArrayList<>();
+        for(Object message:(Queue<?>)queueField.get(null)) {
+            java.lang.reflect.Method owner=message.getClass().getDeclaredMethod("getPlayerId"); owner.setAccessible(true);
+            if(((Long)owner.invoke(message)).longValue()!=player.getWurmId()) continue;
+            java.lang.reflect.Method bytes=message.getClass().getDeclaredMethod("getMessageBytes"); bytes.setAccessible(true);
+            packets.add((byte[])bytes.invoke(message));
+        }
+        return packets;
     }
     /** Packet buffer only; Unsafe allocation bypasses every socket-opening constructor. */
     public static final class MemoryConnection extends com.wurmonline.communication.SocketConnection {

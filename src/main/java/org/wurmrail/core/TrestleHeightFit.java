@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.NavigableSet;
+import java.util.TreeSet;
 
 /** Fits flexible waypoint heights to the same terrain samples used to check the deck. */
 public final class TrestleHeightFit {
@@ -24,19 +26,58 @@ public final class TrestleHeightFit {
 
     public static TrestleAlignment fit(TrestleAlignment baseline, List<Double> overrides, double maxGrade,
                                        List<Sample> ground) {
+        return fit(baseline, overrides, maxGrade, ground, null);
+    }
+
+    public static TrestleAlignment fit(TrestleAlignment baseline, List<Double> overrides, double maxGrade,
+                                       List<Sample> ground, List<TrestleAlignment.TileSection> tiles) {
         if (overrides.stream().noneMatch(java.util.Objects::isNull)
                 || ground.stream().noneMatch(sample -> baseline.elevationAt(sample.distance) + TERRAIN_TOLERANCE < sample.ground))
             return baseline;
 
         List<Double> poles = baseline.waypointDistances();
-        int last = poles.size() + 1;
-        double[] distances = new double[last + 1], preferred = new double[last + 1], heights = new double[last + 1];
+        NavigableSet<Double> marks = new TreeSet<>(poles);
+        marks.add(0d);
+        marks.add(baseline.length);
+        NavigableSet<Double> fixedMarks = new TreeSet<>();
+        fixedMarks.add(0d);
+        fixedMarks.add(baseline.length);
+        for (int i = 0; i < poles.size(); i++)
+            if (overrides.get(i) != null) fixedMarks.add(poles.get(i));
+        try {
+            double[] heights = fitHeights(baseline, distances(marks), fixedMarks, maxGrade, ground, false);
+            List<Double> fitted = new ArrayList<>();
+            for (int i = 1; i < heights.length - 1; i++) fitted.add(heights[i]);
+            return baseline.withWaypointElevations(fitted,maxGrade);
+        } catch (ClearanceFailure blocked) {
+            if (tiles == null) throw blocked;
+        }
+
+        // Use deck mesh rows as additional grade points so the running surface
+        // and the train's height profile can follow the same changes in grade.
+        for (TrestleAlignment.TileSection tile : tiles)
+            for (double distance : baseline.panelDistances(tile)) {
+                Double previous = marks.floor(distance), next = marks.ceiling(distance);
+                if (distance - previous > 1e-7 && next - distance > 1e-7) marks.add(distance);
+            }
+        double[] distances = distances(marks);
+        double[] heights = fitHeights(baseline, distances, fixedMarks, maxGrade, ground, true);
+        return baseline.withDeckGrades(distances, heights, maxGrade);
+    }
+
+    private static double[] distances(NavigableSet<Double> marks) {
+        return marks.stream().mapToDouble(Double::doubleValue).toArray();
+    }
+
+    private static double[] fitHeights(TrestleAlignment baseline, double[] distances, NavigableSet<Double> fixedMarks,
+                                       double maxGrade, List<Sample> ground, boolean useDeckGrades) {
+        int last = distances.length - 1;
+        double[] preferred = new double[last + 1], heights = new double[last + 1];
         boolean[] fixed = new boolean[last + 1];
         Arrays.fill(heights, MAX_WURM_HEIGHT);
         for (int i = 0; i <= last; i++) {
-            distances[i] = i == 0 ? 0 : i == last ? baseline.length : poles.get(i-1);
             preferred[i] = baseline.elevationAt(distances[i]);
-            fixed[i] = i == 0 || i == last || overrides.get(i-1) != null;
+            fixed[i] = fixedMarks.contains(distances[i]);
             if (fixed[i]) heights[i] = preferred[i];
         }
 
@@ -47,7 +88,9 @@ public final class TrestleHeightFit {
             if (!fixed[i]) heights[i] = Math.min(heights[i], heights[i+1] + maxGrade*(distances[i+1]-distances[i]));
 
         List<List<Constraint>> adjacent = new ArrayList<>();
-        for (int i = 0; i <= last; i++) adjacent.add(new ArrayList<>());
+        double[] required = preferred.clone();
+        if (!useDeckGrades)
+            for (int i = 0; i <= last; i++) adjacent.add(new ArrayList<>());
         for (Sample sample : ground) {
             // Poles only rise above the baseline. Ground already within clearance
             // therefore needs no constraint, especially immediately at an approach.
@@ -57,13 +100,36 @@ public final class TrestleHeightFit {
             double fraction = (sample.distance-distances[section])/(distances[section+1]-distances[section]);
             double highest = interpolate(heights, section, fraction);
             if (highest + TERRAIN_TOLERANCE < sample.ground - 1e-9)
-                throw new IllegalArgumentException(String.format(Locale.ROOT,
+                throw new ClearanceFailure(String.format(Locale.ROOT,
                         "Auto fit cannot clear the ground %.1f m from the start. Ground %.2f m, highest reachable rail %.2f m. "
-                                + "Adjust a fixed height or move or add a pole.",
-                        sample.distance, sample.ground, highest));
-            Constraint constraint = new Constraint(section, fraction, Math.min(highest, sample.ground+CLEARANCE));
-            adjacent.get(section).add(constraint);
-            adjacent.get(section+1).add(constraint);
+                                + "%s",
+                        sample.distance, sample.ground, highest, useDeckGrades
+                                ? "Check the ground approach, fixed heights and grade limit."
+                                : "Adjust a fixed height or move or add a pole."));
+            double target = Math.min(highest, sample.ground+CLEARANCE);
+            if (useDeckGrades) {
+                double original = interpolate(preferred, section, fraction);
+                if (target <= original) continue;
+                double share = (target - original) / (highest - original);
+                for (int i = section; i <= section + 1; i++)
+                    required[i] = Math.max(required[i], preferred[i] + share * (heights[i] - preferred[i]));
+            } else {
+                Constraint constraint = new Constraint(section, fraction, target);
+                adjacent.get(section).add(constraint);
+                adjacent.get(section+1).add(constraint);
+            }
+        }
+
+        if (useDeckGrades) {
+            // Propagate only the elevation needed to reach each raised point
+            // at the grade limit. This leaves the rest of the profile low.
+            for (int i = 1; i < last; i++)
+                required[i] = Math.min(heights[i], Math.max(required[i],
+                        required[i-1] - maxGrade * (distances[i] - distances[i-1])));
+            for (int i = last-1; i > 0; i--)
+                required[i] = Math.min(heights[i], Math.max(required[i],
+                        required[i+1] - maxGrade * (distances[i+1] - distances[i])));
+            return required;
         }
 
         // Start with a feasible profile and lower free poles toward the original survey.
@@ -74,9 +140,11 @@ public final class TrestleHeightFit {
             for (int i = last-1; i > 0; i--)
                 if (!fixed[i]) lower(i, heights, distances, preferred, maxGrade, adjacent.get(i));
         }
-        List<Double> fitted = new ArrayList<>();
-        for (int i = 1; i < last; i++) fitted.add(heights[i]);
-        return baseline.withWaypointElevations(fitted,maxGrade);
+        return heights;
+    }
+
+    private static final class ClearanceFailure extends IllegalArgumentException {
+        ClearanceFailure(String message) { super(message); }
     }
 
     private static void lower(int pole, double[] heights, double[] distances, double[] preferred, double maxGrade,

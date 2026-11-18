@@ -60,15 +60,21 @@ public final class RailVehiclePlayerClientSmoke {
                 near(player.getX(alpha),base[0],"local player X uses continuous carrier playback");
                 near(player.getY(alpha),base[1],"local player Y uses continuous carrier playback");
                 near(player.getH(alpha),base[2]+1.5,"native sound-listener eye height is retained");
-                near(world.getPlayerPosX(),base[0],"World camera base X bypasses stale local tick interpolation");
-                near(world.getPlayerPosY(),base[1],"World camera base Y bypasses stale local tick interpolation");
-                near(world.getPlayerPosH(),base[2],"World camera base H excludes eye height");
+                near(cameraCoordinate(world,0),base[0],"World camera base X bypasses stale local tick interpolation");
+                near(cameraCoordinate(world,1),base[1],"World camera base Y bypasses stale local tick interpolation");
+                near(cameraCoordinate(world,2),base[2],"World camera base H excludes eye height");
+                near(world.getPlayerPosX(),pos.getX(alpha),"native World X remains on the simulation clock");
+                near(world.getPlayerPosY(),pos.getY(alpha),"native World Y remains on the simulation clock");
+                near(world.getPlayerPosH(),pos.getH(alpha),"native World H remains on the simulation clock");
+                check(world.getPlayerCurrentTileX()==(int)(pos.getX(alpha)/4)
+                                &&world.getPlayerCurrentTileY()==(int)(pos.getY(alpha)/4),
+                        "the delayed rail camera cannot change the client's current simulation tile");
                 near(player.getCarrierXPosOffset(alpha),correction[0],"current pitch/roll seat correction X");
                 near(player.getCarrierYPosOffset(alpha),correction[1],"current pitch/roll seat correction Y");
                 near(player.getCarrierHPosOffset(alpha),correction[2],"current pitch/roll seat correction H");
-                near(world.getPlayerPosX()+player.getCarrierXPosOffset(alpha),x+full[0],"WorldRender final camera X stays fixed to the actual seat");
-                near(world.getPlayerPosY()+player.getCarrierYPosOffset(alpha),y+full[1],"WorldRender final camera Y stays fixed to the actual seat");
-                near(world.getPlayerPosH()+player.getCarrierHPosOffset(alpha)+player.getCameraHeightOffSet(),h+full[2]+1.5,"WorldRender final camera H includes tilted seat exactly once");
+                near(cameraCoordinate(world,0)+player.getCarrierXPosOffset(alpha),x+full[0],"WorldRender final camera X stays fixed to the actual seat");
+                near(cameraCoordinate(world,1)+player.getCarrierYPosOffset(alpha),y+full[1],"WorldRender final camera Y stays fixed to the actual seat");
+                near(cameraCoordinate(world,2)+player.getCarrierHPosOffset(alpha)+player.getCameraHeightOffSet(),h+full[2]+1.5,"WorldRender final camera H includes tilted seat exactly once");
                 near(body.getXPosValue(alpha),base[0],"native player body follows World base X");
                 near(body.getYPosValue(alpha),base[1],"native player body follows World base Y");
                 near(body.getHPosValue(alpha),base[2],"native player body follows World base H");
@@ -78,7 +84,7 @@ public final class RailVehiclePlayerClientSmoke {
             near(pos.getH(.3f),nativeBefore[2],"render-only camera follow preserves simulation H");
             near(player.getXRot(.3f),nativeBefore[3],"rail camera attachment preserves player look pitch");
             near(player.getYRot(.3f),nativeBefore[4],"rail camera attachment preserves player look yaw");
-            double[] current={world.getPlayerPosX()+player.getCarrierXPosOffset(1),world.getPlayerPosY()+player.getCarrierYPosOffset(1),world.getPlayerPosH()+player.getCarrierHPosOffset(1)};
+            double[] current={cameraCoordinate(world,0)+player.getCarrierXPosOffset(1),cameraCoordinate(world,1)+player.getCarrierYPosOffset(1),cameraCoordinate(world,2)+player.getCarrierHPosOffset(1)};
             if(previous!=null)check(distance(current,previous)<.2,"consecutive rendered seat frames have no tick-sized attachment jumps");
             previous=current;
         }
@@ -88,7 +94,7 @@ public final class RailVehiclePlayerClientSmoke {
             near(player.getX(alpha),pos.getX(alpha),"dismount immediately restores native player X");
             near(player.getY(alpha),pos.getY(alpha),"dismount immediately restores native player Y");
             near(player.getH(alpha),pos.getH(alpha)+1.5,"dismount restores native eye position");
-            near(world.getPlayerPosX(),pos.getX(alpha),"dismount restores native World interpolation");
+            near(cameraCoordinate(world,0),pos.getX(alpha),"dismount restores native World interpolation");
             near(player.getCarrierXPosOffset(alpha)+player.getCarrierYPosOffset(alpha)+player.getCarrierHPosOffset(alpha),0,"dismount clears render attachment offsets");
         }
     }
@@ -103,9 +109,9 @@ public final class RailVehiclePlayerClientSmoke {
                 near(player.getX(alpha),p.getX(alpha),"ordinary mounts retain native player interpolation");
                 near(player.getY(alpha),p.getY(alpha),"ordinary mounts retain native player Y");
                 near(player.getH(alpha),p.getH(alpha)+1.5,"ordinary mounts retain native eye height");
-                near(world.getPlayerPosX(),p.getX(alpha),"ordinary mounts retain native World camera X");
-                near(world.getPlayerPosY(),p.getY(alpha),"ordinary mounts retain native World camera Y");
-                near(world.getPlayerPosH(),p.getH(alpha),"ordinary mounts retain native World camera H");
+                near(cameraCoordinate(world,0),p.getX(alpha),"ordinary mounts retain native World camera X");
+                near(cameraCoordinate(world,1),p.getY(alpha),"ordinary mounts retain native World camera Y");
+                near(cameraCoordinate(world,2),p.getH(alpha),"ordinary mounts retain native World camera H");
                 near(player.getCarrierXPosOffset(alpha),10+2*alpha,"ordinary mount X correction keeps native interpolation");
                 near(player.getCarrierYPosOffset(alpha),20+2*alpha,"ordinary mount Y correction keeps native interpolation");
                 near(player.getCarrierHPosOffset(alpha),30+2*alpha,"ordinary mount H correction keeps native interpolation");
@@ -147,9 +153,9 @@ public final class RailVehiclePlayerClientSmoke {
         float nativeYaw=(180-p[3]+360)%360;
         double[] full=rotateSeat(local,nativeYaw,pitch,roll);
         for(float alpha:new float[]{0,.5f,1}) {
-            near(world.getPlayerPosX()+player.getCarrierXPosOffset(alpha),p[0]+full[0],"camera X and train render share one complete frame pose");
-            near(world.getPlayerPosY()+player.getCarrierYPosOffset(alpha),p[1]+full[1],"camera Y and train render share one complete frame pose");
-            near(world.getPlayerPosH()+player.getCarrierHPosOffset(alpha),p[2]+full[2],"camera H and train render share one complete frame pose");
+            near(cameraCoordinate(world,0)+player.getCarrierXPosOffset(alpha),p[0]+full[0],"camera X and train render share one complete frame pose");
+            near(cameraCoordinate(world,1)+player.getCarrierYPosOffset(alpha),p[1]+full[1],"camera Y and train render share one complete frame pose");
+            near(cameraCoordinate(world,2)+player.getCarrierHPosOffset(alpha),p[2]+full[2],"camera H and train render share one complete frame pose");
             call(carrier,"setRenderPos",new Class<?>[]{float.class},alpha);
             near((Float)get(carrier,"x"),p[0],"later native model rendering uses the camera frame X");
             near((Float)get(carrier,"y"),p[1],"later native model rendering uses the camera frame Y");
@@ -200,7 +206,7 @@ public final class RailVehiclePlayerClientSmoke {
                 set(world,"wurmRailFrameNanos",now);
                 // Mounted camera reads the occupied wagon first; the engine
                 // can be rendered later in the same native frame.
-                double cameraX=world.getPlayerPosX()+player.getCarrierXPosOffset(.5f);
+                double cameraX=cameraCoordinate(world,0)+player.getCarrierXPosOffset(.5f);
                 call(engine,"setRenderPos",new Class<?>[]{float.class},.5f);
                 call(wagon,"setRenderPos",new Class<?>[]{float.class},.5f);
                 double ex=(Float)get(engine,"x"),wx=(Float)get(wagon,"x");
@@ -208,6 +214,22 @@ public final class RailVehiclePlayerClientSmoke {
                 near(cameraX,(occupiedWagon?wx:ex)-seat[0],"actual boarded passenger camera uses its car's rendered seat pose");
                 check(front==get(engine,"wurmRailMotion")&&rear==get(wagon,"wurmRailMotion"),"rendering an occupied car never replaces its motion buffer");
             }
+            RailVehicleMotion selected=occupiedWagon?rear:front;
+            long end=start+8000000000L;
+            int packets=((java.util.Deque<?>)get(selected,"packets")).size();
+            long tiltTime=(Long)get(carrier,"wurmRailTiltNanos");
+            check((Boolean)get(carrier,"wurmRailTiltReady"),"moving carrier has a settled terrain orientation");
+            call(carrier,"wurmRailUpdateTerrainTilt",new Class<?>[0]);
+            check((Long)get(carrier,"wurmRailTiltNanos")==tiltTime,
+                    "native tilt requests share the same playback time as camera and models");
+            player.setController(carrier,seat[0],seat[1],seat[2],0,100,1,90,(byte)1);
+            check(player.isCarrierController(),"native local controller transition was exercised");
+            check(((java.util.Deque<?>)get(selected,"packets")).size()==packets,
+                    "mount controller setup does not collapse the wagon or locomotive path to one snapshot");
+            check((Boolean)get(carrier,"wurmRailTiltReady")&&(Long)get(carrier,"wurmRailTiltNanos")==tiltTime,
+                    "local mount position correction retains the carrier's sampled terrain orientation");
+            near(selected.sample(end+1000000000L)[0],occupiedWagon?45:49,
+                    "mount controller setup preserves the most recent authoritative location");
         }
         System.out.println("PASS native PlayerObj.attachTo passenger boarding, collision setup and consist reversal keep the rendered 4m gap and camera seat");
     }
@@ -263,9 +285,9 @@ public final class RailVehiclePlayerClientSmoke {
                     pose[4].reallySetValue(pitch);pose[5].reallySetValue(roll);
                     set(car,"wurmRailTiltReady",true);set(car,"wurmRailTiltPitch",(double)pitch);
                     set(car,"wurmRailTiltRoll",(double)roll);set(car,"wurmRailTiltNanos",now+100000000000L);
-                    double x=world.getPlayerPosX()+player.getCarrierXPosOffset(.5f);
-                    double y=world.getPlayerPosY()+player.getCarrierYPosOffset(.5f);
-                    double h=world.getPlayerPosH()+player.getCarrierHPosOffset(.5f)+player.getCameraHeightOffSet();
+                    double x=cameraCoordinate(world,0)+player.getCarrierXPosOffset(.5f);
+                    double y=cameraCoordinate(world,1)+player.getCarrierYPosOffset(.5f);
+                    double h=cameraCoordinate(world,2)+player.getCarrierHPosOffset(.5f)+player.getCameraHeightOffSet();
                     set(render,"cameraX",(float)x);set(render,"cameraY",(float)h);set(render,"cameraZ",(float)y);
                     com.wurmonline.math.Vector3f joint=rotatedMount(mount,pose[3].getValue(),pitch,roll);
                     for(boolean reflection:new boolean[]{false,true}) {
@@ -327,9 +349,9 @@ public final class RailVehiclePlayerClientSmoke {
                         check(mount.hasCarrierCreatureMountJoint()&&mount.getMountPlace().equals("NullMount"+(place%4+1)),"native reboarding refreshes the selected loaded seat without stale prior-car offsets");
                         check((Long)get(motion,"lastPlayback")==oldPlayback,"reboarding the other vehicle leaves the departed car's playback state untouched");
                     }
-                    double cameraX=world.getPlayerPosX()+player.getCarrierXPosOffset(.5f);
-                    double cameraY=world.getPlayerPosY()+player.getCarrierYPosOffset(.5f);
-                    double cameraH=world.getPlayerPosH()+player.getCarrierHPosOffset(.5f)+player.getCameraHeightOffSet();
+                    double cameraX=cameraCoordinate(world,0)+player.getCarrierXPosOffset(.5f);
+                    double cameraY=cameraCoordinate(world,1)+player.getCarrierYPosOffset(.5f);
+                    double cameraH=cameraCoordinate(world,2)+player.getCarrierHPosOffset(.5f)+player.getCameraHeightOffSet();
                     set(render,"cameraX",(float)cameraX);set(render,"cameraY",(float)cameraH);set(render,"cameraZ",(float)cameraY);
                     com.wurmonline.math.Transform view=new com.wurmonline.math.Transform();
                     call(render,"getWorldViewTransform",new Class<?>[]{com.wurmonline.math.Transform.class},view);
@@ -414,6 +436,10 @@ public final class RailVehiclePlayerClientSmoke {
     private static Object get(Object object,String name) throws Exception {return RailVehicleTerrainClientSmoke.get(object,name);}
     private static void set(Object object,String name,Object value) throws Exception {RailVehicleTerrainClientSmoke.set(object,name,value);}
     private static Object call(Object object,String name,Class<?>[] types,Object...values) throws Exception {return RailVehicleTerrainClientSmoke.call(object,name,types,values);}
+    static float cameraCoordinate(World world,int axis) throws Exception {
+        float nativePosition=axis==0?world.getPlayerPosX():axis==1?world.getPlayerPosY():world.getPlayerPosH();
+        return (Float)call(world,"wurmRailCameraCoordinate",new Class<?>[]{int.class,float.class},axis,nativePosition);
+    }
     private static void near(double actual,double expected,String message) {check(Math.abs(actual-expected)<.0002,message+": expected "+expected+", got "+actual);}
     private static void check(boolean condition,String message) {assertions++;if(!condition)throw new AssertionError(message);}
 }

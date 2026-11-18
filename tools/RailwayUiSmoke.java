@@ -247,7 +247,7 @@ public final class RailwayUiSmoke {
                 dispatchSurvey(actor,dioptra,curvePole.getWurmId(),waypoint);
                 check(requests.size()==1,"native intermediate pole dispatch preserves the activated dioptra");
                 requests.remove().run();
-                check(surveyBml.contains("5-tile minimum radius") && surveyMarkers.isEmpty(),
+                check(surveyBml.contains("3-tile minimum radius") && surveyMarkers.isEmpty(),
                         "a tight curve displays its radius error and clears the previous in-world markers: "+surveyBml);
                 java.util.Properties undoPole = new java.util.Properties();
                 undoPole.setProperty("undoPole","true");
@@ -397,11 +397,20 @@ public final class RailwayUiSmoke {
                     network.stop(train.name);
                     network.reverse(train.name);
                     network.start(train.name);
+                    boolean announced=false;
                     for(int tick=0;tick<100;tick++) {
                         network.tick(.1);
                         apply.invoke(runtime,train);
+                        if (!announced && engine.getTileX()==startTile+2) {
+                            actor.getCommunicator().sendNewMovingItem(engine.getWurmId(),engine.getName(),
+                                    engine.getModelName(),engine.getPosX(),engine.getPosY(),engine.getPosZ()+3,
+                                    -10L,engine.getRotation(),(byte)0,true,false,false,(byte)0,(byte)0);
+                            check(PassengerWorldSmoke.queuedMovingAnnouncementAt(actor,engine.getWurmId(),engine.getPosZ()),
+                                    "a native reannouncement while backing publishes the surveyed height");
+                            announced=true;
+                        }
                     }
-                    check(engine.getTileX()==startTile && Math.abs(engine.getPosZ()-13.1)<.001,
+                    check(announced && engine.getTileX()==startTile && Math.abs(engine.getPosZ()-13.1)<.001,
                             "locomotive returns uphill across the join to the flat starting tile");
                     network.stop(train.name);
                     network.removeTrain(train.name);
@@ -509,6 +518,21 @@ public final class RailwayUiSmoke {
             check(surveyMarkers.size()<=15 && surveyMarkers.values().stream().anyMatch(
                     p -> p[0]==poleX && p[1]==poleY && p[2]>5 && p[2]<6),
                     "the off-axis pole is included at its exact placed position in the preview");
+            int[] bank = {mesh.getTile(x,y), mesh.getTile(x,y+1),
+                    mesh.getTile(x+1,y), mesh.getTile(x+1,y+1)};
+            try {
+                for (int column = x; column <= x+1; column++) {
+                    mesh.setTile(column,y,com.wurmonline.mesh.Tiles.encode((short)46,
+                            com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id,(byte)0));
+                    mesh.setTile(column,y+1,com.wurmonline.mesh.Tiles.encode((short)54,
+                            com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id,(byte)0));
+                }
+                surveyAnswer(actor,requests,"preview",null,null);
+                check(surveyBml.contains("GM build curved trestle"),
+                        "a cross-sloped bank meets the deck at its centreline: "+surveyBml);
+            } finally {
+                for (int i = 0; i < bank.length; i++) mesh.setTile(x+i/2,y+i%2,bank[i]);
+            }
             checkCurveEdge(actor,requests,mesh,curve);
             java.util.Properties cancel = new java.util.Properties();
             cancel.setProperty("cancel","true");

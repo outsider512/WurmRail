@@ -6,7 +6,7 @@ param(
     [string]$ClientDir = (Join-Path $PSScriptRoot 'Wurm Unlimited/WurmLauncher'),
     [string]$ClientModLoaderDir = (Join-Path $PSScriptRoot 'tools/clientloader'),
     [string]$Python = 'python',
-    [string]$Version = '2.31.1',
+    [string]$Version = '2.31.1-synced-consist',
     [switch]$UseExistingAssets
 )
 
@@ -143,6 +143,7 @@ Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($classesDir + [IO.Path]::PathSep
 Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($classesDir + [IO.Path]::PathSeparator + $testClassesDir), 'org.wurmrail.core.WaterUnloadStopsSelfTest')
 Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($testClassesDir + [IO.Path]::PathSeparator + $testClasspath), 'org.wurmrail.RailwayWaterUnloadServiceSelfTest')
 Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($testClassesDir + [IO.Path]::PathSeparator + $testClasspath), 'org.wurmrail.shared.CoalVeinTilesSelfTest')
+Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($testClassesDir + [IO.Path]::PathSeparator + $testClasspath), 'org.wurmrail.shared.RailConsistFrameSelfTest')
 Write-Host 'Checking railway builder input, captured identities and forged form answers.'
 Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($testClassesDir + [IO.Path]::PathSeparator + $testClasspath), 'org.wurmrail.RailwayBuilderUiSelfTest')
 Invoke-JavaTool $compatRuntime @('-ea', '-cp', ($testClassesDir + [IO.Path]::PathSeparator + $testClasspath), 'org.wurmrail.RailwaySignalUiSelfTest')

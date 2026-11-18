@@ -15,7 +15,8 @@ public final class RailVehicleMotionClientSmoke {
             RailVehicleTerrainClientSmoke.setupWorld(0,0,5,0,0,5);
             for(String model:new String[]{"model.wurmrail.locomotive.","model.wurmrail.cart.large.","model.wurmrail.tankcar.","model.wurmrail.logcar."})
                 for(int layer:new int[]{0,-1})nativePackets(model,layer);
-            listenerHeadingsAndCurve();controllerPlaceholderPackets();reversingConsist();curvedConsist();carriedPose();exclusions();
+            listenerHeadingsAndCurve();controllerPlaceholderPackets();reversingConsist();curvedConsist();
+            synchronizedBoarding();carriedPose();exclusions();
             System.out.println("PASS native buffered rail motion hooks, paired XY/Z, shared position/height/yaw, frame and camera getters, mounted pose, stopped/teleport handling and unchanged ordinary carts ("+assertions+" assertions)");
         } finally { CellRenderable.world=old; }
     }
@@ -232,6 +233,9 @@ public final class RailVehicleMotionClientSmoke {
     private static void curvedConsist(ConsistPath path,double startDistance,String label) throws Exception {
         Class<?> listenerType=Class.forName("com.wurmonline.client.comm.ServerConnectionListenerClass");
         java.lang.reflect.Method allocate=RailVehicleTerrainClientSmoke.class.getDeclaredMethod("allocate",Class.class);allocate.setAccessible(true);
+        java.lang.reflect.Method makePlayer=RailVehiclePlayerClientSmoke.class.getDeclaredMethod(
+                "player",World.class,CreatureCellRenderable.class,boolean.class,float[].class);
+        makePlayer.setAccessible(true);
         double worstPosition=0,worstGap=0;
         for(String wagonModel:new String[]{"model.wurmrail.cart.","model.wurmrail.tankcar.","model.wurmrail.logcar."})
             for(int engineRate:new int[]{4,20})for(int wagonRate:new int[]{4,20}) {
@@ -242,6 +246,9 @@ public final class RailVehicleMotionClientSmoke {
             Object listener=allocate.invoke(null,listenerType);set(listener,"world",CellRenderable.world);
             java.util.Map<Long,CreatureCellRenderable> creatures=new java.util.HashMap<Long,CreatureCellRenderable>();
             creatures.put(engine.getId(),engine);creatures.put(wagon.getId(),wagon);set(listener,"creatures",creatures);
+            Object connection=allocate.invoke(null,Class.forName("com.wurmonline.client.comm.SimpleServerConnectionClass"));
+            set(connection,"serverConnectionListener",listener);
+            Object player=makePlayer.invoke(null,CellRenderable.world,null,false,new float[3]);
             long start=System.nanoTime()+10000000000L;
             nativeConsistPacket(listener,engine,front[0],front[1],front[2],start);nativeConsistPacket(listener,wagon,rear[0],rear[1],rear[2],start);
             ((RailVehicleMotion)get(engine,"wurmRailMotion")).reset(front[0],front[1],5,front[2],start);
@@ -251,15 +258,21 @@ public final class RailVehicleMotionClientSmoke {
                 double time=frame/60.0;
                 while(nextEngine<=time+.00000001) {
                     float[] p=path.pose(startDistance+curveTravel(nextEngine));
-                    nativeConsistPacket(listener,engine,p[0],p[1],p[2],start+Math.round(nextEngine*1e9));nextEngine+=1.0/engineRate;
+                    curvedWirePacket(connection,engine,p,start+Math.round(nextEngine*1e9));nextEngine+=1.0/engineRate;
                 }
                 while(nextWagon<=time+.00000001) {
                     float[] p=path.pose(startDistance-4+curveTravel(nextWagon));
-                    nativeConsistPacket(listener,wagon,p[0],p[1],p[2],start+Math.round(nextWagon*1e9));nextWagon+=1.0/wagonRate;
+                    curvedWirePacket(connection,wagon,p,start+Math.round(nextWagon*1e9));nextWagon+=1.0/wagonRate;
                 }
                 set(CellRenderable.world,"wurmRailFrameNanos",start+Math.round(time*1e9));
+                CreatureCellRenderable ridden=frame<90||frame>=330&&frame<420?null:frame<330?wagon:engine;
+                set(player,"carrierCreature",ridden);
+                float cameraX=ridden==null?0:RailVehiclePlayerClientSmoke.cameraCoordinate(CellRenderable.world,0);
+                float cameraY=ridden==null?0:RailVehiclePlayerClientSmoke.cameraCoordinate(CellRenderable.world,1);
                 call(engine,"setRenderPos",new Class<?>[]{float.class},.5f);call(wagon,"setRenderPos",new Class<?>[]{float.class},.5f);
                 float x=(Float)get(engine,"x"),y=(Float)get(engine,"y"),wx=(Float)get(wagon,"x"),wy=(Float)get(wagon,"y");
+                if (ridden!=null) check(Math.hypot(cameraX-(ridden==wagon?wx:x),cameraY-(ridden==wagon?wy:y))<.0001,
+                        "the camera and the boarded vehicle use the same curved playback pose");
                 double gap=Math.abs(path.distance(x,y)-path.distance(wx,wy)-4);worstGap=Math.max(worstGap,gap);
                 check(gap<.035,"quantized native packets retain arc-length consist spacing around the bend in either travel direction: "+gap);
                 for(int car=0;car<2;car++) {
@@ -269,7 +282,113 @@ public final class RailVehicleMotionClientSmoke {
                 }
             }
         }
-        System.out.println("PASS native reversing consist on "+label+": actual 8-bit packet headings and mixed 4/20 Hz streams; worst centreline error="+worstPosition+"m, worst 4m arc gap error="+worstGap+"m");
+        System.out.println("PASS native reversing consist on "+label+": opcode 72, mixed 4/20 Hz, wagon boarding, dismount and locomotive boarding; worst centreline error="+worstPosition+"m, worst 4m arc gap error="+worstGap+"m");
+    }
+
+    private static void curvedWirePacket(Object connection,CreatureCellRenderable car,float[] pose,long time) throws Exception {
+        byte yaw=(byte)(int)(pose[2]*256/360);
+        java.nio.ByteBuffer payload=java.nio.ByteBuffer.allocate(21);
+        payload.putLong(car.getId()).putFloat(5).putFloat(pose[0]).put(yaw).putFloat(pose[1]).flip();
+        call(connection,"reallyHandleCmdMoveCreatureAndSetZ",new Class<?>[]{java.nio.ByteBuffer.class},payload);
+        // Keep the wire-decoded targets and give the playback a deterministic clock for the 60 Hz assertions.
+        float[] targets=(float[])get(car,"posTargets");
+        check(targets[0]==pose[0]&&targets[1]==pose[1]&&targets[2]==5,
+                "the native client reads the server's complete XYZ from opcode 72");
+        call(car,"wurmRailAcceptMotion",new Class<?>[]{float.class,float.class,float.class,float.class,long.class},
+                targets[0],targets[1],targets[2],targets[3],time);
+    }
+
+    private static void synchronizedBoarding() throws Exception {
+        World world=RailVehicleTerrainClientSmoke.setupWorld(0,0,5,0,0,5);
+        ConsistPath path=new ConsistPath();
+        double startDistance=6;
+        float[] front=path.pose(startDistance), rear=path.pose(startDistance-4);
+        CreatureCellRenderable engine=vehicle("model.wurmrail.locomotive.",0,front[0],front[1],5,180-front[2]);
+        CreatureCellRenderable wagon=vehicle("model.wurmrail.cart.",0,rear[0],rear[1],5,180-rear[2]);
+        java.lang.reflect.Method makePlayer=RailVehiclePlayerClientSmoke.class.getDeclaredMethod(
+                "player",World.class,CreatureCellRenderable.class,boolean.class,float[].class);
+        makePlayer.setAccessible(true);
+        Object player=makePlayer.invoke(null,world,null,false,new float[3]);
+        Class<?> playback=org.wurmrail.client.RailConsistPlayback.class;
+        java.lang.reflect.Method receive=playback.getDeclaredMethod(
+                "receive",org.wurmrail.shared.RailConsistFrame.class,long.class);
+        receive.setAccessible(true);
+        org.wurmrail.client.RailConsistPlayback.clear();
+        long local=System.nanoTime()+1_000_000_000L, server=8_000_000_000L;
+        int packet=0;
+        try {
+            for (int frame=0;frame<=600;frame++) {
+                double elapsed=frame/60.0;
+                long now=local+Math.round(elapsed*1e9);
+                double deliveredAt=consistArrival(packet);
+                while (deliveredAt<=elapsed) {
+                    if (packet>80 && packet<100 || packet>180 && packet<200) {
+                        packet++;
+                        deliveredAt=consistArrival(packet);
+                        continue;
+                    }
+                    double travel=curveTravel(packet*.05);
+                    double leadDistance=startDistance+travel;
+                    float[] a=path.pose(leadDistance),b=path.pose(leadDistance-4);
+                    org.wurmrail.shared.RailConsistFrame.Pose lead=new org.wurmrail.shared.RailConsistFrame.Pose(
+                            engine.getId(),a[0],a[1],height(leadDistance),a[2],0);
+                    org.wurmrail.shared.RailConsistFrame.Pose tail=new org.wurmrail.shared.RailConsistFrame.Pose(
+                            wagon.getId(),b[0],b[1],height(leadDistance-4),b[2],0);
+                    org.wurmrail.shared.RailConsistFrame incoming=org.wurmrail.shared.RailConsistFrame.decode(
+                            org.wurmrail.shared.RailConsistFrame.encode(server+packet*50_000_000L,java.util.Arrays.asList(lead,tail)));
+                    receive.invoke(null,incoming,local+Math.round(deliveredAt*1e9));
+                    packet++;
+                    deliveredAt=consistArrival(packet);
+                }
+                CreatureCellRenderable ridden=null;
+                if (frame>=90 && frame<228) ridden=wagon;
+                if (frame>=300) ridden=engine;
+                set(player,"carrierCreature",ridden);
+                // Exercise stale native wagon positions during the mount and
+                // after leaving the seat, while the complete frames stay intact.
+                double nativeLag=frame>=90 && frame<300?.32:0;
+                for (CreatureCellRenderable car:new CreatureCellRenderable[]{engine,wagon}) {
+                    double carTime=car==wagon?elapsed-nativeLag:elapsed;
+                    double distance=startDistance-(car==wagon?4:0)+curveTravel(Math.max(0,carTime));
+                    float[] nativePose=path.pose(distance);
+                    float nativeHeight=frame>=90?8:height(distance);
+                    call(car,"wurmRailAcceptMotion",new Class<?>[]{float.class,float.class,float.class,float.class,long.class},
+                            nativePose[0],nativePose[1],nativeHeight,180-nativePose[2],now);
+                }
+                set(world,"wurmRailFrameNanos",now);
+                for (CreatureCellRenderable car:new CreatureCellRenderable[]{engine,wagon}) {
+                    call(car,"setRenderPos",new Class<?>[]{float.class},.5f);
+                    double distance=startDistance-(car==wagon?4:0)+curveTravel(Math.max(0,elapsed-.25));
+                    float[] expected=path.pose(distance);
+                    check(Math.hypot((Float)get(car,"x")-expected[0],(Float)get(car,"y")-expected[1])<.025,
+                            "synchronized consist follows the curve despite delayed native wagon motion");
+                    check(Math.abs((Float)get(car,"h")-height(distance))<.012,
+                            "synchronized height comes from the same position and server tick");
+                }
+                double gap=path.distance((Float)get(engine,"x"),(Float)get(engine,"y"))
+                        -path.distance((Float)get(wagon,"x"),(Float)get(wagon,"y"));
+                check(Math.abs(gap-4)<.035,"boarding, stopping and reversing preserve the four-metre arc gap");
+            }
+            check(org.wurmrail.client.RailConsistPlayback.sample(wagon.getId(),0,local+12_000_000_000L)!=null,
+                    "a stopped train can keep its last synchronized pose without packets");
+            check(org.wurmrail.client.RailConsistPlayback.sample(wagon.getId(),0,local+12_000_000_000L,
+                    local+12_000_000_000L)==null,"new native movement can recover from a stale synchronized stream");
+            org.wurmrail.client.RailConsistPlayback.forget(wagon.getId());
+            check(org.wurmrail.client.RailConsistPlayback.sample(wagon.getId(),0,local+12_000_000_000L)==null,
+                    "a despawned wagon cannot reuse a stale synchronized pose");
+        } finally {
+            org.wurmrail.client.RailConsistPlayback.clear();
+        }
+        System.out.println("PASS synchronized client playback through jitter, wagon boarding, dismount, locomotive boarding, grades and stop/reverse");
+    }
+
+    private static float height(double distance) {
+        return (float)(5+.02*distance);
+    }
+
+    private static double consistArrival(int packet) {
+        if (packet%4==2 || packet%4==3) return (packet/4*4+2)*.05+.09;
+        return packet*.05;
     }
     private static double curveTravel(double time) {
         if(time<=4)return time*5;if(time<=5)return 20;if(time<=9)return 20-(time-5)*5;

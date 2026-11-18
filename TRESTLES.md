@@ -66,13 +66,18 @@ order. It joins existing ground rails in their open direction and chooses a
 compass heading at an untracked approach. The poles can sit off those headings.
 The survey measures grade along the curve, checks terrain and obstructions
 across the deck width, and previews selected poles and bent tops.
+The preview also checks whether a train can move between each ground approach
+and the deck. If an approach is too steep or blocked, the survey identifies its
+tile and withholds construction until the connection is clear.
 
-`trestleMinCurveRadiusTiles` defaults to 5 tiles (20 metres) for new
-configurations and can be set as low as 3 tiles (12 metres). Existing
-configurations keep their settings, with values below 3 raised to 3. Place
-several poles around a tight turn or hairpin. If the radius is too tight, the
-survey names the section to adjust. The total span length and grade limits
-also apply.
+`trestleMinCurveRadiusTiles` defaults to 3 tiles (12 metres). Set a higher
+value for broader curves. Existing configurations keep their settings.
+Set `trestleMinCurveRadiusTiles=3` to use the default on an existing server.
+The planner can adjust the heading through intermediate poles to spread a turn
+over adjacent spans. It keeps every pole and the headings of the approaches
+fixed. Place poles along the desired arc of a tight turn or hairpin. If the
+radius is still too tight, the survey names the section to adjust. The total
+span length and grade limits also apply.
 With GM power 2, stand near either approach and choose **GM build curved
 trestle**. The regular trestle removal action removes a curved span too.
 Install the matching client and server packages to see and walk on the curved
@@ -81,8 +86,12 @@ deck.
 ## Section elevations and route map
 
 Mark the destination to calculate the route. Blank pole fields fit their
-heights to the sampled terrain across the deck. The planner respects both
-approaches and checks each section against `trestleMaxGradientPercent`.
+heights to the sampled terrain across the deck. If those heights alone cannot
+clear the terrain, the planner can also change the grade between poles. It
+keeps both ground joins and manually entered heights fixed and checks every
+grade against `trestleMaxGradientPercent`. At a sloped ground join, the deck
+shoulders can sit in the bank over the first half tile. The track centreline
+still has to clear the ground.
 Each pole shows its tile, ground elevation, planned rail elevation, and the
 grade from the previous point. Enter a height in metres to fix a pole at that
 height, or clear the field to use automatic fitting again. **Update preview**
@@ -125,7 +134,9 @@ and backup logic. Older elevated spans retain their saved profiles.
 Networks without elevated edges continue to save in format 4.
 New waypoint spans use format 8, which records their curve type and approach
 headings. Spans with fitted or fixed elevations save the resulting height at each
-pole. Existing format 7 trestles retain their original lines and circular arcs.
+pole. Spans with automatic grades between poles use format 9 to save those
+additional elevations. Existing format 7 trestles retain their original lines
+and circular arcs.
 Previously built waypoint spans retain their original grades. Each locomotive
 and wagon samples its position along the saved alignment. Curved deck pieces
 use that same alignment to reconstruct their mesh and walking surface.

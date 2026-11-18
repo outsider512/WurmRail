@@ -5,9 +5,22 @@ import org.wurmrail.shared.TrestlePanel;
 
 /** Primitive-only model lookup: safe for the loader to verify before game classes are patched. */
 public final class RailModelRegistry {
+    private static final ThreadLocal<Long> nativeRailMove = new ThreadLocal<>();
+
+    public static boolean isRailVehicleTemplate(int template) {
+        return template != 0 && (template == locomotiveId || template == cartId
+                || TankCarRegistry.isTankCar(template) || LogCarRegistry.isLogCar(template));
+    }
+
+    static void beginNativeRailMove(long item) { nativeRailMove.set(item); }
+    static void endNativeRailMove() { nativeRailMove.remove(); }
+    public static boolean suppressNativeRailMove(long item) {
+        Long moving = nativeRailMove.get();
+        return moving != null && moving == item;
+    }
     private static volatile int locomotiveId, cartId, trackId, trackSectionId, pickupId, dropoffId, alignmentId, signalId;
     private static volatile int trestleDeckId, trestleBentId;
-    private static final java.util.Set<Long> elevatedCars = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final ConcurrentHashMap<Long,Float> elevatedCars = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Long, TrestlePanel> curvedDecks = new ConcurrentHashMap<>();
     private RailModelRegistry() { }
 
@@ -23,9 +36,9 @@ public final class RailModelRegistry {
     public static void registerSignal(int signal) { signalId=signal; }
     public static void registerTrestle(int deck, int bent) { trestleDeckId = deck; trestleBentId = bent; }
     public static boolean isTrestle(int id) { return id != 0 && (id == trestleDeckId || id == trestleBentId); }
-    public static boolean isElevatedCar(long id) { return elevatedCars.contains(id); }
-    static void setElevatedCar(long id, boolean elevated) {
-        if (elevated) elevatedCars.add(id);
+    public static float elevatedCarHeight(long id) { return elevatedCars.getOrDefault(id,Float.NaN); }
+    static void setElevatedCarHeight(long id, float height) {
+        if (Float.isFinite(height)) elevatedCars.put(id,height);
         else elevatedCars.remove(id);
     }
 

@@ -37,6 +37,7 @@ final class RailwayTrestleSurvey {
     private static final long PREVIEW_NANOS = 60_000_000_000L;
     private static final int MAX_PREVIEW_BENTS = 12;
     private static final int POLES_PER_PAGE = 5;
+    private static final double BANK_JOIN_LENGTH = TrestleAlignment.TILE / 2;
     private static final double[] CURVED_OFFSETS = {
             -TrestleDeckSurface.HALF_WIDTH, -TrestleDeckSurface.HALF_WIDTH*.5,
             TrestleDeckSurface.HALF_WIDTH*.5, TrestleDeckSurface.HALF_WIDTH
@@ -230,7 +231,7 @@ final class RailwayTrestleSurvey {
         button(body, "cancel", "Cancel survey");
         body.append("};");
         if (draft.end != null) map(body, draft, horizontal);
-        showElevations(body, draft, profile);
+        showElevations(body, draft, plan == null ? null : profile);
         body.append(supportDetails);
         String content = body.toString();
         ModQuestions.createQuestion(actor, "Railway trestle survey", "", tool, new ModQuestion() {
@@ -287,7 +288,8 @@ final class RailwayTrestleSurvey {
 
     private String describePlan(StringBuilder body, Plan plan) throws Exception {
         TrestleAlignment alignment = plan.alignment;
-        String grade = alignment.hasWaypointElevations() ? "" : String.format(Locale.ROOT," | grade %+.2f%%",alignment.gradient*100);
+        String grade = alignment.hasWaypointElevations() || alignment.hasDeckGrades() ? ""
+                : String.format(Locale.ROOT," | grade %+.2f%%",alignment.gradient*100);
         String tiles = alignment.curved ? " | "+plan.curvedTiles+" rail tiles" : "";
         line(body, String.format(Locale.ROOT, "%s alignment %.1f m%s%s",
                 alignment.curved ? "Curved" : "Straight", alignment.length, tiles, grade), 240, 240, 240);
@@ -307,7 +309,8 @@ final class RailwayTrestleSurvey {
         }
         line(body, String.format(Locale.ROOT, "Survey clear | %d proposed bents | height %.1f to %.1f m",
                 bents.size(), min, max),145,235,160);
-        if (plan.autoFitted) line(body, "Automatic pole heights clear the sampled terrain.",145,235,160);
+        if (alignment.hasDeckGrades()) line(body, "Automatic grades between poles clear the sampled terrain.",145,235,160);
+        else if (plan.autoFitted) line(body, "Automatic pole heights clear the sampled terrain.",145,235,160);
         if (bents.size() > 8) line(details, "Showing the first eight supports.",240,240,240);
         return details.toString();
     }
@@ -369,6 +372,12 @@ final class RailwayTrestleSurvey {
                 throw new IllegalArgumentException("The approach at " + site.x + ", " + site.y + " changed. Mark it again.");
             if (current != null && Math.abs(site.point.z - groundCentreHeight(site.x, site.y)) > 0.05)
                 throw new IllegalArgumentException("The approach elevation changed. Mark it again.");
+            if (current != null && !current.links.isEmpty()) {
+                Node connected = api.rail(current.links.iterator().next());
+                String issue = WurmRailWorld.validateEdge(connected.tileX,connected.tileY,site.x,site.y,0);
+                if (issue != null)
+                    throw new IllegalArgumentException("Ground rails leading to the approach at " + site.x + ", " + site.y + ". " + issue);
+            }
         }
         Set<Long> checked = new HashSet<>();
         List<GroundCheck> ground = new ArrayList<>();
@@ -380,30 +389,64 @@ final class RailwayTrestleSurvey {
                         + tile.y + ". Move the nearby pole to give the approach more room.");
             ground.add(checkDeckPoint(actor,draft,checked,alignment.at(tile.center()),tile.center()));
         }
+        double[] startBank = bankShoulders(alignment, 0), endBank = bankShoulders(alignment, alignment.length);
         for (double distance : alignment.waypointDistances())
-            checkDeckSection(actor,draft,checked,alignment,distance,ground);
+            checkDeckSection(actor,draft,checked,alignment,distance,ground,startBank,endBank);
         int samples = (int) Math.ceil(alignment.length * 2);
         for (int i = 0; i <= samples; i++)
-            checkDeckSection(actor,draft,checked,alignment,alignment.length*((double)i/samples),ground);
+            checkDeckSection(actor,draft,checked,alignment,alignment.length*((double)i/samples),ground,startBank,endBank);
         TrestleAlignment fitted = alignment;
         if (alignment.curved) {
             List<TrestleHeightFit.Sample> samplesForFit = new ArrayList<>();
             for (GroundCheck check : ground) samplesForFit.add(check.sample);
-            fitted = TrestleHeightFit.fit(alignment, draft.elevationOverrides(), maxGradient, samplesForFit);
+            fitted = TrestleHeightFit.fit(alignment, draft.elevationOverrides(), maxGradient, samplesForFit, curvedTiles);
         }
         for (GroundCheck check : ground) check.requireClear(fitted);
+        validateApproaches(draft.start,draft.end,fitted);
         return new Plan(draft.start,draft.end,fitted,supportSpacing,curvedTiles.size(),fitted != alignment);
     }
 
+    static void validateApproaches(Site start, Site end, TrestleAlignment alignment) {
+        validateApproach(start,alignment,true);
+        validateApproach(end,alignment,false);
+    }
+
+    private static void validateApproach(Site site,TrestleAlignment alignment,boolean start) {
+        try {
+            WurmRailWorld.validateTrestleApproach(site.point,alignment,start);
+        } catch (Exception blocked) {
+            throw new IllegalArgumentException((start ? "Start" : "Destination") + " approach at "
+                    + site.x + ", " + site.y + ". " + blocked.getMessage(),blocked);
+        }
+    }
+
     private void checkDeckSection(Creature actor, Draft draft, Set<Long> checked, TrestleAlignment alignment,
-                                  double distance, List<GroundCheck> samples) throws Exception {
+                                  double distance, List<GroundCheck> samples, double[] startBank, double[] endBank) throws Exception {
         GroundCheck highest = checkDeckPoint(actor,draft,checked,alignment.at(distance),distance);
-        if (alignment.curved)
-            for (double width : CURVED_OFFSETS) {
-                GroundCheck edge = checkDeckPoint(actor,draft,checked,alignment.offsetAt(distance,width),distance);
+        if (alignment.curved) {
+            double startBlend = Math.max(0, 1 - distance / BANK_JOIN_LENGTH);
+            double endBlend = Math.max(0, 1 - (alignment.length - distance) / BANK_JOIN_LENGTH);
+            for (int i = 0; i < CURVED_OFFSETS.length; i++) {
+                Point point = alignment.offsetAt(distance,CURVED_OFFSETS[i]);
+                double bankAllowance = startBank[i] * startBlend + endBank[i] * endBlend;
+                GroundCheck edge = checkDeckPoint(actor,draft,checked,point,distance,bankAllowance);
                 if (edge.sample.ground > highest.sample.ground) highest = edge;
             }
+        }
         samples.add(highest);
+    }
+
+    private static double[] bankShoulders(TrestleAlignment alignment, double seam) throws Exception {
+        double[] shoulders = new double[CURVED_OFFSETS.length];
+        if (alignment.curved) {
+            double centre = terrain(alignment.at(seam));
+            // The deck shoulders can sit in the bank at a ground join. The
+            // centreline must meet the ground and full deck clearance resumes
+            // over the first half tile.
+            for (int i = 0; i < shoulders.length; i++)
+                shoulders[i] = Math.max(0, terrain(alignment.offsetAt(seam,CURVED_OFFSETS[i])) - centre);
+        }
+        return shoulders;
     }
 
     private TrestleAlignment alignment(Draft draft) {
@@ -430,8 +473,7 @@ final class RailwayTrestleSurvey {
         points.add(approachSeam(draft.start, startHeading));
         for (Waypoint pole : draft.waypoints) points.add(pole.point);
         points.add(approachSeam(draft.end, endHeading));
-        return TrestleAlignment.waypoints(points, curveRadius, maxLength, Double.POSITIVE_INFINITY,
-                startHeading, (endHeading + 4) % 8);
+        return TrestleAlignment.fitWaypoints(points, curveRadius, maxLength, startHeading, (endHeading + 4) % 8);
     }
 
     private TrestleAlignment profile(Draft draft, TrestleAlignment horizontal) {
@@ -452,13 +494,18 @@ final class RailwayTrestleSurvey {
     }
 
     private GroundCheck checkDeckPoint(Creature actor,Draft draft,Set<Long> checked,Point point,double distance) throws Exception {
+        return checkDeckPoint(actor,draft,checked,point,distance,0);
+    }
+
+    private GroundCheck checkDeckPoint(Creature actor,Draft draft,Set<Long> checked,Point point,double distance,
+                                       double bankAllowance) throws Exception {
         int x = (int)Math.floor(point.x/4), y = (int)Math.floor(point.y/4);
         if (x<1 || y<1 || x>=Zones.worldTileSizeX-1 || y>=Zones.worldTileSizeY-1)
             throw new IllegalArgumentException("The planned deck extends outside the playable map.");
         long tile = (long)x<<32 | (y&0xffffffffL);
         if (checked.add(tile) && !draft.start.isAt(x,y) && !draft.end.isAt(x,y))
             checkCorridorTile(actor,x,y);
-        return new GroundCheck(x,y,new TrestleHeightFit.Sample(distance,terrain(point)));
+        return new GroundCheck(x,y,new TrestleHeightFit.Sample(distance,terrain(point)-bankAllowance));
     }
 
     private static final class GroundCheck {
@@ -589,7 +636,7 @@ final class RailwayTrestleSurvey {
                 String label = String.format(Locale.ROOT, "Ground %.2f m", terrain(p));
                 if (!distances.isEmpty()) {
                     label += String.format(Locale.ROOT, "  |  Planned rail %.2f m  |  Incoming grade %+.2f%%",
-                            profile.elevationAt(distances.get(i)), profile.sectionGradient(i)*100);
+                            profile.elevationAt(distances.get(i)), profile.gradeInto(distances.get(i))*100);
                 }
                 line(body, label, 240, 240, 240);
                 body.append("harray{input{id=\"pole").append(i).append("\";maxchars=\"16\";text=\"")
@@ -602,8 +649,8 @@ final class RailwayTrestleSurvey {
             body.append("};");
         }
         if (draft.end != null) {
-            if (profile != null && profile.hasWaypointElevations()) line(body, String.format(Locale.ROOT,
-                    "Grade into destination %+.2f%%", profile.sectionGradient(draft.waypoints.size())*100), 240, 240, 240);
+            if (profile != null && (profile.hasWaypointElevations() || profile.hasDeckGrades())) line(body, String.format(Locale.ROOT,
+                    "Grade into destination %+.2f%%", profile.gradeInto(profile.length)*100), 240, 240, 240);
         }
     }
 

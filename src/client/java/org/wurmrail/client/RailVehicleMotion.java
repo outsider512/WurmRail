@@ -61,13 +61,41 @@ public final class RailVehicleMotion {
         while(packets.size()>MAX_PACKETS)packets.removeFirst();
     }
 
+    /** Visibility announcements can precede or trail the movement stream. */
+    public synchronized void refresh(float x,float y,float height,float yaw,long now) {
+        Packet latest=packets.getLast();
+        double distance=Math.hypot(x-latest.x,y-latest.y);
+        // A reannouncement supplies metadata, not another point on the curve.
+        // Keep the existing teleport threshold for genuine discontinuities.
+        if(distance<.00001||distance>8)accept(x,y,height,yaw,now);
+    }
+
+    synchronized void acceptFrame(float x,float y,float height,float yaw,long time) {
+        Packet latest=packets.getLast();
+        double distance=Math.hypot(x-latest.x,y-latest.y);
+        if (distance>8) {
+            reset(x,y,height,yaw,time);
+            return;
+        }
+        // The server skips unchanged parked trains. Preserve their stationary
+        // pose up to the next movement tick instead of interpolating a long gap.
+        if (time-latest.time>500000000L)
+            packets.addLast(new Packet(latest.x,latest.y,latest.height,latest.yaw,time-MIN_DELAY));
+        packets.addLast(new Packet(x,y,height,angle(yaw),time));
+        while (packets.size()>MAX_PACKETS) packets.removeFirst();
+    }
+
     /** No extrapolation: when packets stop, the latest authoritative pose is held. */
     public synchronized float[] sample(long now) {
-        Packet first=packets.getFirst(),latest=packets.getLast();
         // Every vehicle in a consist must show the same moment. Independent
         // adaptive delays compress reversing consists when packet rates differ.
         // A quarter second covers the supported 4-Hz stream without prediction.
-        long playback=Math.max(lastPlayback,now-MAX_DELAY);
+        return sampleAt(now-MAX_DELAY);
+    }
+
+    synchronized float[] sampleAt(long at) {
+        Packet first=packets.getFirst(),latest=packets.getLast();
+        long playback=Math.max(lastPlayback,at);
         playback=Math.max(first.time,Math.min(latest.time,playback));lastPlayback=playback;
         while(packets.size()>2) {
             Packet second=second();if(second.time>playback)break;packets.removeFirst();

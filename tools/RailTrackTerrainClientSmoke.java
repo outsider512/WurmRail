@@ -190,6 +190,23 @@ public final class RailTrackTerrainClientSmoke {
         set(renderer,"surfaceCells",grid);
         world.setCellRenderer(renderer);
         renderer.addRenderable(rail);
+        vehiclePitch("locomotive",45.5f,46f,39.75f,270f,-10L,.5f,
+                "locomotive uses the trestle grade at its playback position");
+        vehiclePitch("cart",49.5f,46f,5f,270f,-10L,0f,
+                "wagon on the approach uses its own grade");
+        vehiclePitch("cart",46.5f,46f,40.25f,90f,-10L,-.5f,
+                "reversed wagon tilts along the same trestle in the opposite direction");
+        for (float heading : new float[]{90,270}) {
+            com.wurmonline.client.renderer.cell.CreatureCellRenderable car =
+                    RailVehicleTerrainClientSmoke.makeVehicle("model.wurmrail.locomotive.",0,46,46,40.18f,heading);
+            call(car,"wurmRailAcceptMotion",new Class<?>[]{float.class,float.class,float.class,float.class,long.class},
+                    46f,46f,40.18f,heading,now);
+            call(car,"wurmRailApplyMotion",new Class<?>[]{long.class},now+1000000000L);
+            call(car,"wurmRailUpdateTerrainTilt",new Class<?>[]{long.class},now+1000000000L);
+            float pitch=((float[])get(car,"posTargets"))[4];
+            check(Math.abs(car.getHPosValue(0)-40)<.001 && Math.signum(pitch)==(heading==90?-1:1),
+                    "a reversed deck pose keeps both the correct elevation and facing pitch");
+        }
 
         Constructor<?> constructor = Class.forName("com.wurmonline.client.game.PlayerMovementCheck")
                 .getDeclaredConstructor(World.class);
@@ -252,6 +269,7 @@ public final class RailTrackTerrainClientSmoke {
         SurfaceCell cell=(SurfaceCell)allocate(SurfaceCell.class);
         set(cell,"staticStructures",Collections.singletonList(deck));
         CellRenderer cells=(CellRenderer)allocate(CellRenderer.class);
+        set(cells,"wurmRailDecks",new org.wurmrail.client.TrestleWalkingDecks());
         SurfaceCell[][] grid=new SurfaceCell[16][16];
         grid[0][0]=cell;
         set(cells,"surfaceCells",grid);
@@ -270,11 +288,29 @@ public final class RailTrackTerrainClientSmoke {
         for(int i=0;i<formed.length;i++) for(int j=0;j<formed[i].length;j+=3)
             check(Math.abs(formed[i][j+1]-original[i][j+1]-original[i][j]*.75f)<.0001,
                     "bridge rail vertices match the native deck plane without shortening the footprint");
+        vehiclePitch("locomotive",50f,46f,5f,270f,bridgeId,0f,
+                "a locomotive off the bridge uses the local approach even with a stale bridge ID");
+        vehiclePitch("cart",46f,46f,21.5f,270f,-10L,.75f,
+                "a trailing wagon still on the native deck uses that grade after its bridge ID advances");
+        vehiclePitch("cart",46f,46f,5f,270f,-10L,0f,
+                "a wagon passing below a bridge uses ground grade");
         set(cell,"staticStructures",Collections.emptyList());
         conform(rail);
         check(Math.abs(rail.getHPos()-21.5f)<.0001&&Arrays.deepEquals(formed,snapshot(rail.getModelWrapper())),
                 "late bridge data keeps authoritative item height and last geometry");
         System.out.println("PASS native bridge rail mesh conforms to the deck and retains explicit height while its deck data is unavailable");
+    }
+
+    private static void vehiclePitch(String model,float x,float y,float height,float heading,long bridge,
+                                     float grade,String message) throws Exception {
+        com.wurmonline.client.renderer.cell.CreatureCellRenderable vehicle =
+                RailVehicleTerrainClientSmoke.makeVehicle("model.wurmrail."+model+".",0,x,y,height,heading);
+        set(get(vehicle,"creature"),"bridgeId",bridge);
+        call(vehicle,"wurmRailUpdateTerrainTilt",new Class<?>[]{long.class},now);
+        float[] targets=(float[])get(vehicle,"posTargets");
+        check(Math.abs(targets[4]-Math.toDegrees(Math.atan(grade)))<.01
+                  && Math.abs(targets[5])<.01 && vehicle.getHPosValue(0)==height,
+                message+" (pitch "+targets[4]+", roll "+targets[5]+")");
     }
 
     public static void coldFirstTrack() throws Exception {

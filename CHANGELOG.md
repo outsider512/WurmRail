@@ -2,6 +2,12 @@
 
 ## 2.31.1
 
+- Send visible locomotive and wagon positions together on the server's movement
+  clock. Keep the mounted camera on that same playback position while Wurm
+  continues to use its native position for tile and terrain lookups.
+- Keep wagon spacing and curve playback through boarding and dismounting.
+  Correct the server's queued movement packet and preserve the client's rail
+  path when Wurm updates the rider's mount or reannounces a vehicle.
 - Curve through the marked intermediate range poles in order. The default
   minimum radius is 5 tiles (20 metres), configurable down to 3 tiles (12 metres).
 - Fit blank pole heights to terrain within the grade limit, or enter fixed

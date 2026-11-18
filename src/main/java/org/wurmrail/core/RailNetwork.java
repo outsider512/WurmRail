@@ -457,7 +457,8 @@ public final class RailNetwork {
     public synchronized void setCurvedTrestleElevation(List<String> rails,TrestleAlignment alignment) {
         if (!alignment.curved) throw problem("A curved trestle requires a curved survey.");
         if (alignment.length>2000 || alignment.surveyRadius()>2000 || alignment.surveyPoints().size()>502
-                || alignment.maximumAbsoluteGradient()>1+1e-12 || alignment.surveyPoints().stream().anyMatch(point ->
+                || (!alignment.hasDeckGrades() && alignment.maximumAbsoluteGradient()>1+1e-12)
+                || alignment.surveyPoints().stream().anyMatch(point ->
                 point.x<0 || point.y<0 || point.x>Integer.MAX_VALUE || point.y>Integer.MAX_VALUE
                         || point.z< -3277 || point.z>3277))
             throw problem("The curved trestle exceeds the saved survey limits.");
@@ -1934,8 +1935,12 @@ public final class RailNetwork {
                 if(next.layer!=owner.layer&&next.tileX==tileX&&next.tileY==tileY) { piece=adjacent;owner=next;break; }
             }
             int elevated = g.elevatedEdge(piece,s);
-            result.add(new Pose(t.carIds.get(c),x,y,rotation,owner.layer,t.path.get(piece),
-                    g.elevation(piece,elevated,s),elevated<0?null:g.seams[elevated]));
+            ApproachSeam seam=elevated<0?null:g.seams[elevated];
+            float height=g.elevation(piece,elevated,s);
+            // At native float precision either side can land on the same join.
+            // Its height is the surveyed seam even when terrain below is steep.
+            if (seam!=null && x==seam.x && y==seam.y) height=seam.z;
+            result.add(new Pose(t.carIds.get(c),x,y,rotation,owner.layer,t.path.get(piece),height,seam));
         }
         return Collections.unmodifiableList(result);
     }
@@ -2389,7 +2394,7 @@ public final class RailNetwork {
             if(expected==null || !MessageDigest.isEqual(expected.getBytes("UTF-8"),checksum(p).getBytes("UTF-8"))) throw problem("State checksum does not match.");
             String format=required(p,"format");
             if(!"1".equals(format)&&!"2".equals(format)&&!"3".equals(format)&&!"4".equals(format)
-                    &&!"5".equals(format)&&!"6".equals(format)&&!"7".equals(format)&&!"8".equals(format))
+                    &&!"5".equals(format)&&!"6".equals(format)&&!"7".equals(format)&&!"8".equals(format)&&!"9".equals(format))
                 throw problem("Unsupported rail state format.");
             RailNetwork net=new RailNetwork();net.maxCars=integer(p,"maxCars",1,64);
             Map<Train,StationTurnback.Plan> loadedTurnbacks=new LinkedHashMap<Train,StationTurnback.Plan>();
@@ -2424,7 +2429,7 @@ public final class RailNetwork {
                 }
             }
             if(!loadedEntrances.equals(entrances))throw problem("Saved cave entrance is missing its track connection.");
-            boolean curvedFormat = "7".equals(format) || "8".equals(format);
+            boolean curvedFormat = "7".equals(format) || "8".equals(format) || "9".equals(format);
             if ("5".equals(format)||"6".equals(format)||curvedFormat) {
                 int countElevated = integer(p, "elevatedEdges", curvedFormat?0:1, 100000);
                 for (int i = 0; i < countElevated; i++) {
@@ -2450,10 +2455,17 @@ public final class RailNetwork {
                         }
                         String geometry = "7".equals(format) ? "rounded" : required(p, key + "geometry");
                         TrestleAlignment alignment;
-                        if ("hermite".equals(geometry) || "hermite-profile".equals(geometry)) {
-                            alignment = TrestleAlignment.waypoints(points, decimal(p,key+"radius",12,2000), 2000, 1,
-                                    integer(p,key+"startHeading",0,7), integer(p,key+"endHeading",0,7));
-                            if ("hermite-profile".equals(geometry)) {
+                        boolean fitted="hermite-fit".equals(geometry) || "hermite-fit-profile".equals(geometry);
+                        if ("hermite".equals(geometry) || "hermite-profile".equals(geometry) || fitted) {
+                            double radius=decimal(p,key+"radius",12,2000);
+                            int firstHeading=integer(p,key+"startHeading",0,7), lastHeading=integer(p,key+"endHeading",0,7);
+                            if (fitted) {
+                                List<Double> headings=new ArrayList<>();
+                                for (int j=1;j<marks-1;j++)
+                                    headings.add(decimal(p,key+"point."+j+".heading",-Math.PI,Math.PI));
+                                alignment=TrestleAlignment.savedWaypoints(points,radius,firstHeading,lastHeading,headings);
+                            } else alignment=TrestleAlignment.waypoints(points,radius,2000,1,firstHeading,lastHeading);
+                            if (geometry.endsWith("-profile")) {
                                 List<Double> heights = new ArrayList<>();
                                 for (int j = 1; j < marks-1; j++) heights.add(points.get(j).z);
                                 alignment = alignment.withWaypointElevations(heights, 1);
@@ -2461,6 +2473,16 @@ public final class RailNetwork {
                         } else if ("rounded".equals(geometry)) {
                             alignment = TrestleAlignment.rounded(points,decimal(p,key+"radius",4,2000),2000,1);
                         } else throw problem("Unknown saved trestle geometry.");
+                        if ("9".equals(format) && p.containsKey(key+"gradePoints")) {
+                            int gradeCount = integer(p,key+"gradePoints",2,TrestleAlignment.MAX_GRADE_POINTS);
+                            double[] distances = new double[gradeCount], heights = new double[gradeCount];
+                            for (int j=0;j<gradeCount;j++) {
+                                String grade = key+"grade."+j+".";
+                                distances[j] = decimal(p,grade+"distance",0,alignment.length);
+                                heights[j] = decimal(p,grade+"height",-3277,3277);
+                            }
+                            alignment = alignment.withDeckGrades(distances,heights,1);
+                        }
                         net.setCurvedTrestleElevation(list(p,key+"rails"),alignment);
                     }
                 }
@@ -2584,6 +2606,7 @@ public final class RailNetwork {
         for(ElevatedEdge grade:elevatedEdges.values()) if(grade.seam!=null) { format=6;break; }
         if (!curvedSpans.isEmpty()) format=7;
         if (curvedSpans.values().stream().anyMatch(span -> span.alignment.startHeading >= 0)) format=8;
+        if (curvedSpans.values().stream().anyMatch(span -> span.alignment.hasDeckGrades())) format=9;
         put(p,"format",format);
         put(p,"maxCars",maxCars);put(p,"nodes",nodes.size());put(p,"trains",trains.size());
         int i=0;
@@ -2620,9 +2643,12 @@ public final class RailNetwork {
                 String key="curved."+(i++)+".";
                 put(p,key+"rails",join(span.rails));
                 put(p,key+"radius",span.alignment.surveyRadius());
-                if (format == 8) {
+                if (format >= 8) {
                     String geometry = span.alignment.startHeading >= 0 ? "hermite" : "rounded";
-                    put(p,key+"geometry",span.alignment.hasWaypointElevations() ? "hermite-profile" : geometry);
+                    if (span.alignment.hasWaypointElevations()) geometry = "hermite-profile";
+                    if (!span.alignment.fittedHeadings.isEmpty())
+                        geometry = span.alignment.hasWaypointElevations() ? "hermite-fit-profile" : "hermite-fit";
+                    put(p,key+"geometry",geometry);
                     if (span.alignment.startHeading >= 0) {
                         put(p,key+"startHeading",span.alignment.startHeading);
                         put(p,key+"endHeading",span.alignment.endHeading);
@@ -2634,6 +2660,16 @@ public final class RailNetwork {
                     String prefix=key+"point."+j+".";
                     TrestleAlignment.Point mark=points.get(j);
                     put(p,prefix+"x",mark.x);put(p,prefix+"y",mark.y);put(p,prefix+"z",mark.z);
+                    if (j>0 && j<points.size()-1 && !span.alignment.fittedHeadings.isEmpty())
+                        put(p,prefix+"heading",span.alignment.fittedHeadings.get(j-1));
+                }
+                if (span.alignment.hasDeckGrades()) {
+                    put(p,key+"gradePoints",span.alignment.deckGradeCount());
+                    for (int j=0;j<span.alignment.deckGradeCount();j++) {
+                        String grade = key+"grade."+j+".";
+                        put(p,grade+"distance",span.alignment.deckGradeDistance(j));
+                        put(p,grade+"height",span.alignment.deckGradeHeight(j));
+                    }
                 }
             }
         }

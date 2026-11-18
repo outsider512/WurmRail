@@ -29,21 +29,31 @@ public final class TrestleAlignment {
     private final Point start, end;
     private final List<Section> sections;
     private final double[] origins;
+    private final double[] gradeDistances, gradeHeights;
     private final boolean waypointProfile;
     private final List<Point> surveyPoints;
     private final double surveyRadius;
+    final List<Double> fittedHeadings;
     final int startHeading, endHeading;
     public final double length, gradient;
     public final boolean curved;
 
     private TrestleAlignment(Point start, Point end, double length, List<Section> sections, boolean curved,
                              List<Point> surveyPoints, double surveyRadius, int startHeading, int endHeading) {
-        this(start,end,length,sections,curved,surveyPoints,surveyRadius,startHeading,endHeading,false);
+        this(start,end,length,sections,curved,surveyPoints,surveyRadius,startHeading,endHeading,false,Collections.emptyList());
     }
 
     private TrestleAlignment(Point start, Point end, double length, List<Section> sections, boolean curved,
                              List<Point> surveyPoints, double surveyRadius, int startHeading, int endHeading,
-                             boolean waypointProfile) {
+                             boolean waypointProfile, List<Double> fittedHeadings) {
+        this(start,end,length,sections,curved,surveyPoints,surveyRadius,startHeading,endHeading,
+                waypointProfile,fittedHeadings,null,null);
+    }
+
+    private TrestleAlignment(Point start, Point end, double length, List<Section> sections, boolean curved,
+                             List<Point> surveyPoints, double surveyRadius, int startHeading, int endHeading,
+                             boolean waypointProfile, List<Double> fittedHeadings,
+                             double[] gradeDistances, double[] gradeHeights) {
         this.start = start;
         this.end = end;
         this.sections = sections;
@@ -57,6 +67,9 @@ public final class TrestleAlignment {
         this.startHeading = startHeading;
         this.endHeading = endHeading;
         this.waypointProfile = waypointProfile;
+        this.gradeDistances = gradeDistances;
+        this.gradeHeights = gradeHeights;
+        this.fittedHeadings = Collections.unmodifiableList(new ArrayList<>(fittedHeadings));
     }
 
     public static TrestleAlignment straight(Point start, Point end, double maxLength, double maxGradient) {
@@ -123,6 +136,22 @@ public final class TrestleAlignment {
      */
     public static TrestleAlignment waypoints(List<Point> points, double radius, double maxLength,
                                               double maxGradient, int startHeading, int endHeading) {
+        return waypoints(points,radius,maxLength,maxGradient,startHeading,endHeading,false,Collections.emptyList());
+    }
+
+    public static TrestleAlignment fitWaypoints(List<Point> points, double radius, double maxLength,
+                                               int startHeading, int endHeading) {
+        return waypoints(points,radius,maxLength,Double.POSITIVE_INFINITY,startHeading,endHeading,true,Collections.emptyList());
+    }
+
+    static TrestleAlignment savedWaypoints(List<Point> points, double radius, int startHeading,
+                                          int endHeading, List<Double> headings) {
+        return waypoints(points,radius,2000,1,startHeading,endHeading,false,headings);
+    }
+
+    private static TrestleAlignment waypoints(List<Point> points, double radius, double maxLength,
+                                               double maxGradient, int startHeading, int endHeading,
+                                               boolean fit, List<Double> savedHeadings) {
         if (points.size() < 3) throw new IllegalArgumentException("Mark an intermediate range pole for a curve.");
         if (!Double.isFinite(radius) || radius < 3 * TILE)
             throw new IllegalArgumentException("The minimum trestle curve radius is 3 tiles.");
@@ -151,6 +180,13 @@ public final class TrestleAlignment {
                 throw new IllegalArgumentException("The route doubles back at pole " + i + ". Place several poles around the turn.");
             tangents[i] = new double[]{x / length, y / length};
         }
+        List<Double> headings = savedHeadings;
+        if (!savedHeadings.isEmpty()) {
+            if (savedHeadings.size() != legs - 1) throw new IllegalArgumentException("Missing saved trestle headings.");
+            for (int i = 1; i < legs; i++) tangents[i] = unit(savedHeadings.get(i-1));
+        } else if (fit && sharpSection(points,tangents,radius) >= 0) {
+            headings = fitTangents(points,tangents,radius);
+        }
         List<Section> sections = new ArrayList<>();
         double length = 0;
         for (int i = 0; i < legs; i++) {
@@ -158,7 +194,9 @@ public final class TrestleAlignment {
             if (!section.withinRadius(radius))
                 throw new IllegalArgumentException("The curve between " + markName(i, legs) + " and " + markName(i + 1, legs)
                         + " is too sharp for the " + (int)(radius / TILE)
-                        + "-tile minimum radius. Move a pole or place more poles around the turn.");
+                        + "-tile minimum radius. "
+                        + (i == 0 || i == legs-1 ? "Give the approach a longer run before the track turns."
+                                : "Move the nearby poles to spread the turn across more distance."));
             section.measure();
             length += section.length();
             sections.add(section);
@@ -166,9 +204,61 @@ public final class TrestleAlignment {
         Point start = points.get(0), end = points.get(legs);
         checkLimits(start, end, length, maxLength, maxGradient);
         TrestleAlignment alignment = new TrestleAlignment(start, end, length, sections, true, points, radius,
-                startHeading, endHeading);
+                startHeading, endHeading, false, headings);
         alignment.rejectCrossing();
         return alignment;
+    }
+
+    private static int sharpSection(List<Point> points, double[][] tangents, double radius) {
+        for (int i = 0; i < points.size()-1; i++)
+            if (!new TrestleHermite(points.get(i),points.get(i+1),tangents[i],tangents[i+1]).withinRadius(radius)) return i;
+        return -1;
+    }
+
+    private static List<Double> fitTangents(List<Point> points, double[][] tangents, double radius) {
+        // Leave both approach headings and every pole fixed. Spread a sharp
+        // turn over the spans on either side by adjusting their shared heading.
+        double[] angles = new double[tangents.length];
+        for (int i = 0; i < tangents.length; i++) angles[i] = Math.atan2(tangents[i][1],tangents[i][0]);
+        for (double step = .3; step >= .002; step /= 2) {
+            for (int sweep = 0; sweep < 12; sweep++) {
+                boolean changed = false;
+                for (int i = 1; i < angles.length-1; i++) {
+                    double angle = angles[i], candidate = angle;
+                    double score = fitCost(points,tangents,i,angle,radius);
+                    for (double alternative : new double[]{angle-step,angle+step}) {
+                        double cost = fitCost(points,tangents,i,alternative,radius);
+                        if (cost < score) { score = cost; candidate = alternative; }
+                    }
+                    if (candidate == angle) continue;
+                    angles[i] = candidate;
+                    tangents[i] = unit(candidate);
+                    changed = true;
+                }
+                if (!changed) break;
+            }
+        }
+        List<Double> headings = new ArrayList<>();
+        for (int i = 1; i < angles.length-1; i++) headings.add(Math.atan2(tangents[i][1],tangents[i][0]));
+        // Use exactly the headings that the saved world will reconstruct.
+        for (int i = 1; i < angles.length-1; i++) tangents[i] = unit(headings.get(i-1));
+        return headings;
+    }
+
+    private static double fitCost(List<Point> points, double[][] tangents, int mark, double angle, double radius) {
+        double[] tangent = unit(angle);
+        return curvatureCost(new TrestleHermite(points.get(mark-1),points.get(mark),tangents[mark-1],tangent),radius)
+                + curvatureCost(new TrestleHermite(points.get(mark),points.get(mark+1),tangent,tangents[mark+1]),radius);
+    }
+
+    private static double curvatureCost(TrestleHermite section, double radius) {
+        double relative = section.peakCurvature() * radius;
+        double excess = Math.max(0, relative - .95);
+        return excess * excess + .01 * relative * relative;
+    }
+
+    private static double[] unit(double angle) {
+        return new double[]{Math.cos(angle),Math.sin(angle)};
     }
 
     private static String markName(int mark, int last) {
@@ -219,10 +309,44 @@ public final class TrestleAlignment {
             previous = mark;
             previousZ = height;
         }
-        return new TrestleAlignment(start,end,length,sections,curved,marks,surveyRadius,startHeading,endHeading,true);
+        return new TrestleAlignment(start,end,length,sections,curved,marks,surveyRadius,startHeading,endHeading,true,fittedHeadings);
     }
 
     public boolean hasWaypointElevations() { return waypointProfile; }
+
+    static final int MAX_GRADE_POINTS = 65536;
+
+    TrestleAlignment withDeckGrades(double[] distances, double[] heights, double maxGrade) {
+        int last = distances.length - 1;
+        if (startHeading < 0 || last < 1 || last >= MAX_GRADE_POINTS || heights.length != distances.length
+                || distances[0] != 0 || distances[last] != length || heights[0] != start.z || heights[last] != end.z)
+            throw new IllegalArgumentException("The deck grades must meet both survey approaches.");
+        maxGrade = Math.min(maxGrade, 1);
+        for (int i = 0; i <= last; i++) {
+            if (!Double.isFinite(distances[i]) || !Double.isFinite(heights[i]) || heights[i] < -3277 || heights[i] > 3277
+                    || i > 0 && (distances[i] <= distances[i-1]
+                    || Math.abs(heights[i] - heights[i-1]) > maxGrade * (distances[i] - distances[i-1]) + 1e-9))
+                throw new IllegalArgumentException("The deck grades exceed the survey limits.");
+        }
+        return new TrestleAlignment(start,end,length,sections,curved,surveyPoints,surveyRadius,startHeading,endHeading,
+                waypointProfile,fittedHeadings,distances.clone(),heights.clone());
+    }
+
+    public boolean hasDeckGrades() { return gradeDistances != null; }
+    int deckGradeCount() { return gradeDistances.length; }
+    double deckGradeDistance(int index) { return gradeDistances[index]; }
+    double deckGradeHeight(int index) { return gradeHeights[index]; }
+
+    public double gradeInto(double distance) {
+        if (distance <= 0) return 0;
+        if (!hasDeckGrades()) {
+            int index = Arrays.binarySearch(origins, distance);
+            return sectionGradient(index > 0 ? index - 1 : sectionAt(distance));
+        }
+        int index = Arrays.binarySearch(gradeDistances, distance);
+        int before = index >= 0 ? index - 1 : -index - 2;
+        return (gradeHeights[before+1] - gradeHeights[before]) / (gradeDistances[before+1] - gradeDistances[before]);
+    }
 
     public double sectionGradient(int section) {
         if (!waypointProfile) return gradient;
@@ -232,6 +356,11 @@ public final class TrestleAlignment {
 
     double maximumAbsoluteGradient() {
         double maximum = Math.abs(gradient);
+        if (hasDeckGrades()) {
+            for (int i = 1; i < gradeDistances.length; i++)
+                maximum = Math.max(maximum, Math.abs(gradeInto(gradeDistances[i])));
+            return maximum;
+        }
         if (waypointProfile)
             for (int i = 0; i < sections.size(); i++) maximum = Math.max(maximum, Math.abs(sectionGradient(i)));
         return maximum;
@@ -239,6 +368,13 @@ public final class TrestleAlignment {
 
     public double elevationAt(double distance) {
         if (distance == length) return end.z;
+        if (hasDeckGrades()) {
+            int index = Arrays.binarySearch(gradeDistances, distance);
+            if (index >= 0) return gradeHeights[index];
+            int before = -index - 2;
+            double fraction = (distance - gradeDistances[before]) / (gradeDistances[before+1] - gradeDistances[before]);
+            return gradeHeights[before] + fraction * (gradeHeights[before+1] - gradeHeights[before]);
+        }
         if (!waypointProfile) return start.z + distance * gradient;
         int section = sectionAt(distance);
         return surveyPoints.get(section).z + (distance - origins[section]) * sectionGradient(section);
@@ -329,6 +465,18 @@ public final class TrestleAlignment {
         double x = tile.x * TILE + TILE / 2, y = tile.y * TILE + TILE / 2;
         double z = (float)at(tile.center()).z;
         double[][] rows = new double[TrestlePanel.INTERVALS + 1][4];
+        double[] distances = panelDistances(tile);
+        for (int i = 0; i < rows.length; i++) {
+            double distance = distances[i];
+            Point point = at(distance);
+            double[] tangent = tangentAt(distance);
+            rows[i] = new double[]{point.x - x, point.y - y, point.z - z, Math.atan2(tangent[1], tangent[0])};
+        }
+        return TrestlePanel.of(rows);
+    }
+
+    public double[] panelDistances(TileSection tile) {
+        double[] distances = new double[TrestlePanel.INTERVALS + 1];
         double pole = Double.NaN;
         int poleIndex = Arrays.binarySearch(origins, tile.entry);
         poleIndex = poleIndex < 0 ? -poleIndex - 1 : poleIndex + 1;
@@ -336,18 +484,16 @@ public final class TrestleAlignment {
         int middle = Double.isNaN(pole) ? TrestlePanel.INTERVALS
                 : Math.max(1, Math.min(TrestlePanel.INTERVALS - 1,
                         (int)Math.round((pole - tile.entry) / (tile.exit - tile.entry) * TrestlePanel.INTERVALS)));
-        for (int i = 0; i < rows.length; i++) {
+        for (int i = 0; i < distances.length; i++) {
             double distance = tile.entry + (tile.exit - tile.entry) * i / TrestlePanel.INTERVALS;
             if (!Double.isNaN(pole)) {
                 if (i < middle) distance = tile.entry + (pole - tile.entry) * i / middle;
                 else distance = pole + (tile.exit - pole) * (i - middle) / (TrestlePanel.INTERVALS - middle);
             }
             if (i == TrestlePanel.INTERVALS) distance = tile.exit;
-            Point point = at(distance);
-            double[] tangent = tangentAt(distance);
-            rows[i] = new double[]{point.x - x, point.y - y, point.z - z, Math.atan2(tangent[1], tangent[0])};
+            distances[i] = Math.min(length, distance);
         }
-        return TrestlePanel.of(rows);
+        return distances;
     }
 
     public float headingAt(double distance) {

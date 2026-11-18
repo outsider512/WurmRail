@@ -12,6 +12,7 @@ import com.wurmonline.server.behaviours.VehicleBehaviour;
 import com.wurmonline.server.behaviours.Vehicles;
 import com.wurmonline.server.creatures.Creature;
 import com.wurmonline.server.creatures.MovementScheme;
+import com.wurmonline.server.creatures.VisionArea;
 import com.wurmonline.server.items.AdvancedCreationEntry;
 import com.wurmonline.server.items.CreationCategories;
 import com.wurmonline.server.items.CreationEntryCreator;
@@ -22,6 +23,7 @@ import com.wurmonline.server.items.ItemList;
 import com.wurmonline.server.items.ItemTemplate;
 import com.wurmonline.server.items.ItemTemplateFactory;
 import com.wurmonline.server.items.ItemTypes;
+import com.wurmonline.server.players.Player;
 import com.wurmonline.server.skills.SkillList;
 import com.wurmonline.server.structures.Blocking;
 import com.wurmonline.server.structures.BridgePart;
@@ -37,15 +39,19 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.gotti.wurmunlimited.modsupport.ItemTemplateBuilder;
 import org.gotti.wurmunlimited.modsupport.vehicles.ModVehicleBehaviour;
 import org.gotti.wurmunlimited.modsupport.vehicles.ModVehicleBehaviours;
 import org.gotti.wurmunlimited.modsupport.vehicles.VehicleFacade;
 import org.wurmrail.core.RailNetwork.Pose;
 import org.wurmrail.core.RailNetwork.ApproachSeam;
+import org.wurmrail.shared.RailConsistFrame;
 
 /** Wurm-specific item, collision and passenger integration. Call on the server thread. */
 public final class WurmRailWorld {
+    private static final Logger LOG = Logger.getLogger(WurmRailWorld.class.getName());
     public static int locomotiveTemplateId;
     public static int cartTemplateId;
     public static int trackTemplateId;
@@ -66,6 +72,7 @@ public final class WurmRailWorld {
     private static Field visibleItemsField;
     private static boolean templatesCreated;
     private static boolean recipesCreated;
+    private static boolean reportedConsistError;
 
     private WurmRailWorld() { }
 
@@ -658,12 +665,91 @@ public final class WurmRailWorld {
 
     /** Move through Wurm's own zone and watcher code, then update every native passenger. */
     public static void moveCar(long itemId, double x, double y, double rotation, int layer) throws Exception {
-        moveCar(itemId, x, y, rotation, layer, Float.NaN, false, null);
+        moveCar(itemId, x, y, rotation, layer, Float.NaN, false, null, null);
     }
 
     static void moveCar(Pose pose, Pose previous) throws Exception {
+        moveCar(pose,previous,null);
+    }
+
+    static void moveCar(Pose pose, Pose previous, MotionBatch batch) throws Exception {
         moveCar(pose.carId, pose.x, pose.y, pose.rotation, pose.layer, pose.elevation,
-                previous != null && Float.isFinite(previous.elevation), approachSeam(pose,previous));
+                previous != null && Float.isFinite(previous.elevation), approachSeam(pose,previous),batch);
+    }
+
+    /** Queue positions together after the world finishes moving the consist. */
+    static final class MotionBatch {
+        private final List<Runnable> packets = new ArrayList<>();
+        private final List<List<Pose>> consists = new ArrayList<>();
+        private final long timestamp;
+
+        MotionBatch() { this(System.nanoTime()); }
+
+        MotionBatch(long timestamp) { this.timestamp = timestamp; }
+
+        void addConsist(List<Pose> poses) {
+            if (!poses.isEmpty() && RailConsistTransport.hasSubscribers()) consists.add(poses);
+        }
+
+        void send() {
+            for (Runnable packet : packets) packet.run();
+            packets.clear();
+            for (List<Pose> consist : consists) {
+                try { sendConsist(consist,timestamp); }
+                catch (Exception error) {
+                    if (!reportedConsistError) {
+                        reportedConsistError = true;
+                        LOG.log(Level.WARNING,"Could not publish a synchronized rail pose. Native movement packets were sent.",error);
+                    }
+                }
+            }
+            consists.clear();
+        }
+    }
+
+    private static void sendConsist(List<Pose> consist, long timestamp) throws Exception {
+        List<Item> cars = new ArrayList<>(consist.size());
+        Set<Player> mounted = new HashSet<>();
+        for (Pose pose : consist) {
+            Item item = Items.getItem(pose.carId);
+            cars.add(item);
+            Vehicle vehicle = Vehicles.getVehicle(item);
+            if (vehicle == null) continue;
+            for (Seat seat : vehicle.seats) if (seat != null && seat.isOccupied()) {
+                Player rider = Players.getInstance().getPlayerOrNull(seat.occupant);
+                if (rider != null && rider.getVehicle() == pose.carId && RailConsistTransport.receives(rider)) mounted.add(rider);
+            }
+        }
+
+        Map<Player,List<RailConsistFrame.Pose>> frames = new HashMap<>();
+        for (Item car : cars) {
+            VolaTile tile = Zones.getOrCreateTile(car.getTileX(),car.getTileY(),car.isOnSurface());
+            Set<Player> observers = new HashSet<>();
+            for (VirtualZone watcher : tile.getWatchers()) {
+                if (watcher.getWatcher() instanceof Player) {
+                    Player player = (Player)watcher.getWatcher();
+                    if (RailConsistTransport.receives(player) && knowsVehicle(watcher,car,tile)) observers.add(player);
+                }
+            }
+            for (Player rider : mounted) {
+                VisionArea vision = rider.getVisionArea();
+                VirtualZone view = vision == null ? null : car.isOnSurface() ? vision.getSurface() : vision.getUnderGround();
+                if (rider.getVehicle() == car.getWurmId() || knowsVehicle(view,car,tile)) observers.add(rider);
+            }
+            if (observers.isEmpty()) continue;
+            RailConsistFrame.Pose sample = new RailConsistFrame.Pose(car.getWurmId(),car.getPosX(),car.getPosY(),
+                    car.getPosZ(),car.getRotation(),car.isOnSurface() ? 0 : -1);
+            for (Player observer : observers) frames.computeIfAbsent(observer, key -> new ArrayList<>()).add(sample);
+        }
+        for (Map.Entry<Player,List<RailConsistFrame.Pose>> entry : frames.entrySet())
+            RailConsistTransport.send(entry.getKey(),timestamp,entry.getValue());
+    }
+
+    private static boolean knowsVehicle(VirtualZone view, Item vehicle, VolaTile tile) throws ReflectiveOperationException {
+        if (view == null || !view.isVisible(vehicle,tile)) return false;
+        initVisibleItemsField();
+        Set<?> items = (Set<?>)visibleItemsField.get(view);
+        return items != null && items.contains(vehicle);
     }
 
     static void validateCarStep(Item car, Pose destination, Pose previous) throws Exception {
@@ -675,6 +761,34 @@ public final class WurmRailWorld {
     private static ApproachSeam approachSeam(Pose destination, Pose previous) {
         return Float.isFinite(destination.elevation) ? destination.approachSeam
                 : previous == null ? null : previous.approachSeam;
+    }
+
+    static void validateTrestleApproach(org.wurmrail.core.TrestleAlignment.Point approach,
+                                        org.wurmrail.core.TrestleAlignment alignment, boolean start) throws Exception {
+        float x = (float)approach.x, y = (float)approach.y;
+        float ground = groundHeight(x,y,0);
+        if (Math.abs(approach.z-ground) > .05f)
+            throw new IllegalArgumentException("Set the approach elevation to match the ground rail.");
+        double distance = start ? 0 : alignment.length;
+        org.wurmrail.core.TrestleAlignment.Point seam = alignment.at(distance);
+        float sx = (float)seam.x, sy = (float)seam.y;
+        // The ground half stops inside the approach tile. At the exact border,
+        // native tile lookup may name the steep terrain underneath the deck.
+        float insideX = Math.nextAfter(sx,x), insideY = Math.nextAfter(sy,y);
+        validateSegment(x,y,insideX,insideY,0);
+        if (Math.abs(seam.z-Zones.calculateHeight(sx,sy,true)) > .05f)
+            throw new IllegalArgumentException("The deck and ground rail meet at different elevations.");
+        validateElevatedSegment(insideX,insideY,Zones.calculateHeight(insideX,insideY,true),sx,sy,(float)seam.z);
+        double deckRun = Math.min(2,alignment.length);
+        int steps = alignment.hasDeckGrades() ? (int)Math.ceil(deckRun * 4) : 1;
+        org.wurmrail.core.TrestleAlignment.Point previous = seam;
+        for (int i = 1; i <= steps; i++) {
+            double offset = deckRun * i / steps;
+            org.wurmrail.core.TrestleAlignment.Point next = alignment.at(start ? offset : alignment.length - offset);
+            validateElevatedSegment((float)previous.x,(float)previous.y,(float)previous.z,
+                    (float)next.x,(float)next.y,(float)next.z);
+            previous = next;
+        }
     }
 
     private static void validateCarStep(Item car, double x, double y, int layer, float elevation,
@@ -696,8 +810,8 @@ public final class WurmRailWorld {
         // The two sides can have different slopes. A chord across their join
         // can cut through the bank even when the railway follows its surface.
         if (seam != null && elevatedSource != elevatedDestination && distance > 0) {
-            double t = ((seam.x-fromX)*dx+(seam.y-fromY)*dy)/(distance*distance);
-            if (t > 0 && t < 1 && Math.hypot(seam.x-fromX-dx*t,seam.y-fromY-dy*t) < .01) {
+            double throughJoin=Math.hypot(seam.x-fromX,seam.y-fromY)+Math.hypot(x-seam.x,y-seam.y);
+            if (throughJoin <= distance + .10) {
                 validateElevatedSegment(fromX,fromY,fromZ,seam.x,seam.y,seam.z);
                 validateElevatedSegment(seam.x,seam.y,seam.z,(float)x,(float)y,toZ);
                 return;
@@ -728,7 +842,7 @@ public final class WurmRailWorld {
     }
 
     private static void moveCar(long itemId, double x, double y, double rotation, int layer,
-                                float elevation, boolean elevatedSource, ApproachSeam seam) throws Exception {
+                                float elevation, boolean elevatedSource, ApproachSeam seam, MotionBatch batch) throws Exception {
         Item item = Items.getItem(itemId);
         if (!isRailCar(item)) throw new IllegalArgumentException("Item is not a rail vehicle");
         if (item.getTopParent() != itemId || item.getOwnerId() != NO_ID)
@@ -748,7 +862,7 @@ public final class WurmRailWorld {
         long bridgeId=deck==null?NO_ID:deck.getStructureId();
         boolean changedBridge=item.getBridgeId()!=bridgeId;
         float z = Float.isFinite(elevation) ? elevation : railHeight(x,y,layer,deck);
-        RailModelRegistry.setElevatedCar(itemId,Float.isFinite(elevation));
+        RailModelRegistry.setElevatedCarHeight(itemId,deck == null ? elevation : z);
         float facing = (float)((rotation % 360.0 + 360.0) % 360.0);
         VolaTile oldTile = Zones.getOrCreateTile(item.getTileX(), item.getTileY(), item.isOnSurface());
         List<PortalObserver> portalObservers=changedLayer?preparePortalObservers(item,oldTile,(int)x/4,(int)y/4):new ArrayList<PortalObserver>();
@@ -757,8 +871,12 @@ public final class WurmRailWorld {
         // the validated destination already supplies the applicable deck.
         if(changedBridge) item.setOnBridge(bridgeId);
         if ((float)x != item.getPosX() || (float)y != item.getPosY()) {
+            RailModelRegistry.beginNativeRailMove(itemId);
             try { oldTile.moveItem(item, (float)x, (float)y, z, facing, layer == 0, z); }
-            finally { for(PortalObserver observer:portalObservers)observer.finish(item); }
+            finally {
+                RailModelRegistry.endNativeRailMove();
+                for(PortalObserver observer:portalObservers)observer.finish(item);
+            }
             // Native tile movement stores a coarse heading. Keep the curve's exact
             // facing for passenger offsets and rollback.
             if (item.getRotation() != facing || item.getPosZ() != z) {
@@ -778,10 +896,23 @@ public final class WurmRailWorld {
         for(VirtualZone watcher:oldTile.getWatchers())if(watcher.isVisible(item,oldTile))observers.add(watcher.getWatcher());
         for(VirtualZone watcher:currentTile.getWatchers())if(watcher.isVisible(item,currentTile))observers.add(watcher.getWatcher());
         for(PortalObserver observer:portalObservers)observers.add(observer.watcher);
-        for(Creature observer:observers)if(observer.hasLink()) {
-            if(changedLayer)observer.getCommunicator().sendMovingItemChangedLayer(itemId,(byte)layer);
-            if(changedBridge)observer.getCommunicator().sendBridgeId(itemId,bridgeId);
-            observer.getCommunicator().sendMoveMovingItemAndSetZ(itemId,item.getPosX(),item.getPosY(),z,(int)(facing*256.0f/360.0f));
+        // A mounted client already knows its carrier. Its movement packets
+        // cannot depend on the rider remaining in a particular tile's vision list.
+        for (Seat seat : vehicle.seats) if (seat != null && seat.isOccupied()) {
+            Creature rider = Players.getInstance().getPlayerOrNull(seat.occupant);
+            if (rider != null && rider.getVehicle() == itemId) observers.add(rider);
+        }
+        float packetX = item.getPosX(), packetY = item.getPosY();
+        if (!observers.isEmpty()) {
+            Runnable publish = () -> {
+                for (Creature observer : observers) if (observer.hasLink()) {
+                    if (changedLayer) observer.getCommunicator().sendMovingItemChangedLayer(itemId,(byte)layer);
+                    if (changedBridge) observer.getCommunicator().sendBridgeId(itemId,bridgeId);
+                    observer.getCommunicator().sendMoveMovingItemAndSetZ(itemId,packetX,packetY,z,(int)(facing*256.0f/360.0f));
+                }
+            };
+            if (batch == null) publish.run();
+            else batch.packets.add(publish);
         }
         // Move seats before changing their layer, so native newLayer registers a
         // rider at the final seat tile instead of the previous outside tile.
@@ -828,15 +959,7 @@ public final class WurmRailWorld {
      * which the shipped client implements with setPosImmediately. New viewers
      * still use the unmodified native announcement and visibility checks. */
     private static List<PortalObserver> preparePortalObservers(Item item,VolaTile oldTile,int x,int y) throws Exception {
-        if(visibleItemsField==null) {
-            try {
-                Field field=VirtualZone.class.getDeclaredField("items");
-                if(!Set.class.isAssignableFrom(field.getType()))throw new NoSuchFieldException("VirtualZone.items is not a native item set");
-                field.setAccessible(true);visibleItemsField=field;
-            } catch(ReflectiveOperationException failure) {
-                throw new IllegalStateException("This Wurm server version does not expose the native moving-item visibility needed for smooth tunnel crossings",failure);
-            }
-        }
+        initVisibleItemsField();
         List<PortalObserver> result=new ArrayList<PortalObserver>();Set<Creature> visited=new HashSet<Creature>();
         try { for(VirtualZone zone:oldTile.getWatchers()) {
             Creature watcher=zone.getWatcher();
@@ -850,6 +973,18 @@ public final class WurmRailWorld {
             surfaceItems.add(item);caveItems.add(item);
         } } catch(Exception failure) { for(PortalObserver observer:result)observer.finish(item);throw failure; }
         return result;
+    }
+
+    private static void initVisibleItemsField() {
+        if(visibleItemsField==null) {
+            try {
+                Field field=VirtualZone.class.getDeclaredField("items");
+                if(!Set.class.isAssignableFrom(field.getType()))throw new NoSuchFieldException("VirtualZone.items is not a native item set");
+                field.setAccessible(true);visibleItemsField=field;
+            } catch(ReflectiveOperationException failure) {
+                throw new IllegalStateException("This Wurm server version does not expose the native moving-item visibility needed for smooth tunnel crossings",failure);
+            }
+        }
     }
     @SuppressWarnings("unchecked")
     private static Set<Item> visibleItems(VirtualZone zone) throws Exception {

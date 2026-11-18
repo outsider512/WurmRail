@@ -111,6 +111,7 @@ public final class ClientModelsSmoke {
             RailTrackTerrainClientSmoke.run();
             RailVehicleMotionClientSmoke.run();
             RailVehicleClockClientSmoke.run();
+            RailConsistHandshakeClientSmoke.run();
             RailVehicleRefreshClientSmoke.run();
             RailVehiclePlayerClientSmoke.run();
             RailVehicleRiderClientSmoke.run();

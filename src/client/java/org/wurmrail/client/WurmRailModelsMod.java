@@ -1,5 +1,7 @@
 package org.wurmrail.client;
 
+import java.io.File;
+import java.security.CodeSource;
 import javassist.ClassPool;
 import javassist.CtClass;
 import org.gotti.wurmunlimited.modloader.classhooks.HookManager;
@@ -11,6 +13,12 @@ public final class WurmRailModelsMod implements WurmClientMod, PreInitable {
     public void preInit() {
         try {
             ClassPool pool = HookManager.getInstance().getClassPool();
+            // The launcher releases its isolated discovery loaders after preInit.
+            // Keep the mod's runtime helpers available to the patched game classes.
+            CodeSource source = WurmRailModelsMod.class.getProtectionDomain().getCodeSource();
+            if (source == null || source.getLocation() == null)
+                throw new IllegalStateException("Cannot locate WurmRail's client jar for runtime helpers");
+            pool.appendClassPath(new File(source.getLocation().toURI()).getAbsolutePath());
             org.wurmrail.shared.CoalVeinTiles.install(pool);
             CtClass resources = pool.get("com.wurmonline.client.resources.Resources");
             // Only string-based game references are safe during mod discovery.

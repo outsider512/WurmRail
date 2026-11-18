@@ -39,14 +39,29 @@ public final class RailVehicleRefreshClientSmoke {
         check(Math.abs(before-4)<.0001,"both cars initially show the same delayed instant");
         CreatureCellRenderable car=refreshWagon?wagon:engine;String model=refreshWagon?rear:"model.wurmrail.locomotive.";
         float liveX=54-(refreshWagon?4:0)+direction*5;
+        long tiltTime=(Long)get(car,"wurmRailTiltNanos");
         metadata(type,listener,car,model,liveX,5,90);
+        check((Boolean)get(car,"wurmRailTiltReady")&&(Long)get(car,"wurmRailTiltNanos")==tiltTime,
+                "same-layer metadata refresh leaves the current tilt state intact");
         render(engine);render(wagon);
         float gap=engine.getXPosValue(.5f)-wagon.getXPosValue(.5f);
         check(Math.abs(gap-4)<.005,"native metadata refresh must not reset only one car to live time; reverse="+reverse+", rear="+refreshWagon+", gap="+gap);
         check(get(car,"wurmRailMotion")==motions[refreshWagon?1:0],"refresh retains the existing physical pose stream");
+        check(((java.util.Deque<?>)get(motions[refreshWagon?1:0],"packets")).size()>2,"ordinary refresh keeps useful interpolation history rather than merely reusing an emptied buffer object");
+        // Boarding and vision refresh may reannounce a position from either
+        // side of the latest movement packet. Neither is a new track sample.
+        for (float offset : new float[]{-.3f,.65f}) {
+            RailVehicleMotion motion=motions[refreshWagon?1:0];
+            int count=((Deque<?>)get(motion,"packets")).size();
+            metadata(type,listener,car,model,liveX+offset,5,90);
+            check(((Deque<?>)get(motion,"packets")).size()==count,
+                    "a displaced metadata position does not enter the authoritative curve");
+        }
+        float[] live=motions[refreshWagon?1:0].sample(now+1000000000L);
+        check(live[0]==liveX,"metadata arriving during boarding cannot lead or trail the last movement position");
+        metadata(type,listener,car,model,liveX,5,90);
         float[] targets=(float[])get(car,"posTargets");
         check(targets[0]==liveX&&targets[1]==54&&targets[2]==5,"metadata refresh still updates native authoritative position targets");
-        check(((java.util.Deque<?>)get(motions[refreshWagon?1:0],"packets")).size()>2,"ordinary refresh keeps useful interpolation history rather than merely reusing an emptied buffer object");
         metadata(type,listener,car,model,liveX,5.2f,135);
         float[] refreshed=motions[refreshWagon?1:0].sample(now+1000000000L);
         check(targets[0]==liveX&&targets[1]==54&&targets[2]==5.2f&&targets[3]==45&&refreshed[0]==liveX&&refreshed[2]==5.2f&&refreshed[3]==135,"same-position metadata refresh retains authoritative height and correctly converted heading");

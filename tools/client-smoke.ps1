@@ -28,7 +28,7 @@ if (-not (Test-Path -LiteralPath $runtime)) { $runtime = Join-Path $JavaHome 'bi
 $compilerVersion = (& $compiler -version 2>&1 | Out-String).Trim()
 $target = if ($compilerVersion -match 'javac 1\.8\.') { @('-source','1.8','-target','1.8') } else { @('--release','8') }
 $compileClasspath = (Join-Path $packagePath 'mods/wurmrailmodels/wurmrailmodels.jar') + [IO.Path]::PathSeparator + $classpath
-$smokeSources = @('RailVehicleColdLoadSmoke.java','ClientModelsSmoke.java','CoalVeinClientSmoke.java','RailTrackTerrainClientSmoke.java','RailVehicleTerrainClientSmoke.java','RailVehicleMotionClientSmoke.java','RailVehicleRiderClientSmoke.java','RailVehiclePlayerClientSmoke.java','RailVehicleClockClientSmoke.java','RailVehicleRefreshClientSmoke.java','TrestleMapClientSmoke.java') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$smokeSources = @('RailVehicleColdLoadSmoke.java','ClientModelsSmoke.java','CoalVeinClientSmoke.java','RailTrackTerrainClientSmoke.java','RailVehicleTerrainClientSmoke.java','RailVehicleMotionClientSmoke.java','RailVehicleRiderClientSmoke.java','RailVehiclePlayerClientSmoke.java','RailVehicleClockClientSmoke.java','RailVehicleRefreshClientSmoke.java','RailConsistHandshakeClientSmoke.java','TrestleMapClientSmoke.java') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 $smokeSources += @('TrestleAlignment.java','TrestleHermite.java') | ForEach-Object {
     Join-Path $taskRoot "src/main/java/org/wurmrail/core/$_"
 }

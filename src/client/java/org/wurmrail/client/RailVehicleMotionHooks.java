@@ -6,8 +6,6 @@ import javassist.CtField;
 import javassist.CtNewMethod;
 import javassist.expr.ExprEditor;
 import javassist.expr.MethodCall;
-import java.io.File;
-import java.security.CodeSource;
 
 /** Replaces the native one-second target filter only for WurmRail vehicles. */
 public final class RailVehicleMotionHooks {
@@ -16,16 +14,11 @@ public final class RailVehicleMotionHooks {
     public static void install(ClassPool pool) throws Exception {
         // The native listener already turns compass headings into 180-heading.
         // The pure curve buffer uses compass headings; convert at both boundaries.
-        // The official launcher discards its isolated mod loaders after preInit.
-        // LoaderClassPath keeps only a weak reference, so late helper/nested-class
-        // loads can fail after GC. Register the actual jar/directory instead.
-        CodeSource source=RailVehicleMotionHooks.class.getProtectionDomain().getCodeSource();
-        if(source==null||source.getLocation()==null)
-            throw new IllegalStateException("Cannot locate WurmRail's client jar for runtime helpers");
-        pool.appendClassPath(new File(source.getLocation().toURI()).getAbsolutePath());
         CtClass vehicle=pool.get("com.wurmonline.client.renderer.cell.CreatureCellRenderable");
         vehicle.addField(CtField.make("private org.wurmrail.client.RailVehicleMotion wurmRailMotion;",vehicle));
         vehicle.addField(CtField.make("private boolean wurmRailHasExplicitHeight;",vehicle));
+        vehicle.addField(CtField.make("private boolean wurmRailHasTimedMotion;",vehicle));
+        vehicle.addField(CtField.make("private long wurmRailLastNativeMotion;",vehicle));
         vehicle.addField(CtField.make("private boolean wurmRailRefreshing;",vehicle));
         vehicle.addMethod(CtNewMethod.make(
                 "public boolean wurmRailIsLocalController() {"
@@ -34,6 +27,7 @@ public final class RailVehicleMotionHooks {
         vehicle.addMethod(CtNewMethod.make(
                 "public void wurmRailAcceptMotion(float x,float y,float h,float yaw,long now) {"
                 + " if (!wurmRailIsRailVehicle() || this.carrierCreature != null) return;"
+                + " this.wurmRailLastNativeMotion=now;"
                 + " if (h != -3000f && java.lang.Float.isFinite(h)) this.wurmRailHasExplicitHeight=true;"
                 + " if (this.wurmRailHasExplicitHeight) this.setOnGround(false);"
                 + " if (this.wurmRailMotion == null) this.wurmRailMotion = new org.wurmrail.client.RailVehicleMotion("
@@ -42,20 +36,29 @@ public final class RailVehicleMotionHooks {
                 + " this.wurmRailMotion.accept(x,y,h,180f-yaw,now); this.targetChanged=true; this.positionSet=true; }",vehicle));
         vehicle.addMethod(CtNewMethod.make(
                 "public void wurmRailApplyMotion(long now) {"
-                + " if (!wurmRailIsRailVehicle() || this.wurmRailMotion == null || this.carrierCreature != null) return;"
-                + " float[] p=this.wurmRailMotion.sample(now);"
+                + " if (!wurmRailIsRailVehicle() || this.carrierCreature != null) return;"
+                + " float[] p=org.wurmrail.client.RailConsistPlayback.sample(this.getId(),this.getLayer(),now,this.wurmRailLastNativeMotion);"
+                + " this.wurmRailHasTimedMotion=p!=null;"
+                + " if(p!=null)this.wurmRailHasExplicitHeight=true;"
+                + " else { if(this.wurmRailMotion==null)return; p=this.wurmRailMotion.sample(now); }"
                 + " for (int i=0;i<2;i++) this.interTickPos[i].reallySetValue(p[i]);"
-                + " if (this.wurmRailHasExplicitHeight) { this.interTickPos[2].reallySetValue(p[2]); this.setOnGround(false); }"
+                + " if (this.wurmRailHasExplicitHeight) {"
+                + "  float h=org.wurmrail.client.RailDeckTilt.alignHeight(world,p[0],p[1],p[2],this.getLayer());"
+                + "  this.interTickPos[2].reallySetValue(h); this.setOnGround(false); }"
                 + " this.interTickPos[3].reallySetValue((180f-p[3]+360f)%360f);"
                 + " this.targetMovementDiffX=0f; this.targetMovementDiffY=0f;"
                 + " this.hasHPosBeenUpdated=true; this.positionUpdated=true; this.positionSet=true; }",vehicle));
         vehicle.addMethod(CtNewMethod.make(
                 "public void wurmRailBeginRefresh(float x,float y,float h,float yaw,int layer,long now) {"
                 + " if(!wurmRailIsRailVehicle()||this.wurmRailMotion==null||this.getLayer()!=layer)return;"
-                + " wurmRailAcceptMotion(x,y,h,yaw,now);this.wurmRailRefreshing=true; }",vehicle));
+                + " if(h!=-3000f&&java.lang.Float.isFinite(h))this.wurmRailHasExplicitHeight=true;"
+                + " this.wurmRailMotion.refresh(x,y,h,180f-yaw,now);this.wurmRailRefreshing=true; }",vehicle));
         vehicle.addMethod(CtNewMethod.make(
                 "public void wurmRailEndRefresh() { this.wurmRailRefreshing=false; }",vehicle));
         installRiderPose(pool,vehicle);
+        RailVehicleTerrainHooks.bindMotionClock(vehicle);
+        pool.get("org.gotti.wurmunlimited.modcomm.ModCommHandler").getDeclaredMethod("startHandshake").insertBefore(
+                "{ org.wurmrail.client.RailConsistPlayback.startHandshake(); }");
         // Native moveCreature replaces a local controller's received XY with
         // (0,0) before calling move. Capture the actual packet for presentation
         // before that substitution; native control/movement still runs normally.
@@ -78,6 +81,8 @@ public final class RailVehicleMotionHooks {
                 "{ com.wurmonline.client.renderer.cell.CreatureCellRenderable rail="
                 + " (com.wurmonline.client.renderer.cell.CreatureCellRenderable)this.creatures.get(new Long($1));"
                 + " if(rail!=null)rail.wurmRailEndRefresh(); }",true);
+        listener.getDeclaredMethod("deleteCreature").insertAfter(
+                "{ org.wurmrail.client.RailConsistPlayback.forget($1); }");
         vehicle.getDeclaredMethod("move").insertAfter(
                 "{ if(!wurmRailIsLocalController()) wurmRailAcceptMotion($1,$2,$3,$4,System.nanoTime()); }");
         vehicle.getDeclaredMethod("setPosImmediately").insertAfter(
@@ -87,7 +92,8 @@ public final class RailVehicleMotionHooks {
                 + " 180f-this.interTickPos[3].getValue(),System.nanoTime()); }");
         vehicle.getDeclaredMethod("moveDOFtoTarget").insertBefore(
                 "{ if (($1<2 || $1==3 || ($1==2 && this.wurmRailHasExplicitHeight))"
-                + " && this.wurmRailMotion != null && wurmRailIsRailVehicle() && this.carrierCreature==null) return true; }");
+                + " && (this.wurmRailHasTimedMotion || this.wurmRailMotion != null)"
+                + " && wurmRailIsRailVehicle() && this.carrierCreature==null) return true; }");
         // The native bridge branch writes Z directly, bypassing moveDOFtoTarget.
         // Keep packet playback authoritative even when the bridge model is unloaded.
         vehicle.getDeclaredMethod("gameTick").instrument(new ExprEditor() {
@@ -126,7 +132,8 @@ public final class RailVehicleMotionHooks {
                 + " return this.wurmRailFrameNanos==0L?System.nanoTime():this.wurmRailFrameNanos; }",world));
         world.getDeclaredMethod("setSecondsPlayed").insertBefore(
                 "{ this.wurmRailFrameNanos=System.nanoTime(); }");
-        world.getDeclaredMethod("clear").insertBefore("{ this.wurmRailFrameNanos=0L; }");
+        world.getDeclaredMethod("clear").insertBefore(
+                "{ this.wurmRailFrameNanos=0L; org.wurmrail.client.RailConsistPlayback.clear(); }");
         vehicle.addMethod(CtNewMethod.make(
                 "public long wurmRailRenderTime() {"
                 + " return world==null?System.nanoTime():world.wurmRailRenderTime(); }",vehicle));
@@ -184,6 +191,21 @@ public final class RailVehicleMotionHooks {
                 + " $1.translation.addLocal(sign*offset[0],($4?-sign:sign)*offset[1],sign*offset[2]);return; } }");
 
         CtClass player=pool.get("com.wurmonline.client.game.PlayerObj");
+        // Wurm repositions a carrier when setting up the local mount and when
+        // applying a player correction. Only a vehicle packet can reset the
+        // authoritative rail path; the native player targets still update.
+        vehicle.addMethod(CtNewMethod.make(
+                "public void wurmRailSetMountPosition(float x,float y,float h,boolean smooth,boolean ground) {"
+                + " boolean previous=this.wurmRailRefreshing;this.wurmRailRefreshing=true;"
+                + " try { setPosImmediately(x,y,h,smooth,ground); }"
+                + " finally { this.wurmRailRefreshing=previous; } }",vehicle));
+        for (String method : new String[]{"setController","teleportTo"})
+            player.getDeclaredMethod(method).instrument(new ExprEditor() {
+                @Override public void edit(MethodCall call) throws javassist.CannotCompileException {
+                    if (call.getMethodName().equals("setPosImmediately"))
+                        call.replace("{ if($0.wurmRailIsRailVehicle())$0.wurmRailSetMountPosition($$); else $proceed($$); }");
+                }
+            });
         player.addMethod(CtNewMethod.make(
                 "public boolean wurmRailIsRailRider() {"
                 + " return this.carrierCreature!=null&&this.carrierCreature.wurmRailIsRailVehicle(); }",player));
@@ -201,12 +223,26 @@ public final class RailVehicleMotionHooks {
             player.getDeclaredMethod("getCarrier"+axes[axis]+"PosOffset").insertBefore(
                     "{ if(wurmRailIsRailRider())return wurmRailRiderCoordinate("+axis+",true); }");
         }
-        // First-person rendering bypasses PlayerObj.getXYZ and reads its tick
-        // snapshots through World. Route those reads through the same live seat
-        // sample, leaving PlayerPosition and movement/network state untouched.
-        for(int axis=0;axis<axes.length;axis++)
-            world.getDeclaredMethod("getPlayerPos"+axes[axis]).insertBefore(
-                    "{ if(this.getPlayer()!=null&&this.getPlayer().wurmRailIsRailRider())"
-                    + " return this.getPlayer().wurmRailRiderCoordinate("+axis+",false); }");
+        // Render the seat from rail playback. World position still drives
+        // native tile queries, streaming, collision and player movement.
+        world.addMethod(CtNewMethod.make(
+                "public float wurmRailCameraCoordinate(int axis,float nativePosition) {"
+                + " com.wurmonline.client.game.PlayerObj rider=this.getPlayer();"
+                + " return rider!=null&&rider.wurmRailIsRailRider()"
+                + " ?rider.wurmRailRiderCoordinate(axis,false):nativePosition; }",world));
+        ExprEditor railCamera = new ExprEditor() {
+            @Override public void edit(MethodCall call) throws javassist.CannotCompileException {
+                if (!call.getClassName().equals("com.wurmonline.client.game.World")) return;
+                for (int axis=0;axis<axes.length;axis++)
+                    if (call.getMethodName().equals("getPlayerPos"+axes[axis])) {
+                        call.replace("{ $_=$0.wurmRailCameraCoordinate("+axis+",$proceed($$)); }");
+                        return;
+                    }
+            }
+        };
+        pool.get("com.wurmonline.client.renderer.WorldRender").getDeclaredMethod("prepareRender").instrument(railCamera);
+        CtClass body = pool.get("com.wurmonline.client.renderer.PlayerBodyRenderable");
+        for (String axis : axes)
+            body.getDeclaredMethod("get"+axis+"PosValue").instrument(railCamera);
     }
 }

@@ -631,15 +631,51 @@ public final class IntegrationSmoke {
                     int before = capturedRotations;
                     org.wurmrail.WurmRailWorld.moveCar(engine.getWurmId(), engine.getPosX()+.02,
                             engine.getPosY(), heading, 0);
-                    require(capturedRotations == before+2 && capturedRotationItem == engine.getWurmId()
+                    require(capturedRotations == before+1 && capturedRotationItem == engine.getWurmId()
                             && capturedRotation == (int)(heading*256.0/360.0)
                             && Math.abs(capturedX-engine.getPosX())<.00001
                             && Math.abs(capturedY-engine.getPosY())<.00001
                             && Math.abs(capturedZ-engine.getPosZ())<.00001,
-                            "native movement plus final authoritative floor update must retain heading and height: " + heading);
+                            "one authoritative move must retain heading and height: " + heading);
                 }
+                checkConsistPublication(engine, fixture, watchers);
             } finally { watchers.set(tile, original); }
             System.out.println("PASS eight stationary turns and eight moving updates use native moving-item packets; seat frames match artwork");
+        }
+
+        private static void checkConsistPublication(com.wurmonline.server.items.Item engine,
+                java.util.Set<com.wurmonline.server.zones.VirtualZone> fixture, java.lang.reflect.Field watchers)
+                throws Exception {
+            Class<?> world=org.wurmrail.WurmRailWorld.class;
+            Class<?> batchType=Class.forName(world.getName()+"$MotionBatch");
+            java.lang.reflect.Constructor<?> constructor=batchType.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            Object batch=constructor.newInstance();
+            Class<?> poseType=org.wurmrail.core.RailNetwork.Pose.class;
+            java.lang.reflect.Method move=world.getDeclaredMethod("moveCar",poseType,poseType,batchType);
+            move.setAccessible(true);
+            java.lang.reflect.Method send=batchType.getDeclaredMethod("send");
+            send.setAccessible(true);
+            float wagonX=engine.getPosX()-4f, y=engine.getPosY();
+            com.wurmonline.server.items.Item wagon=org.wurmrail.WurmRailWorld.spawnCart(null,wagonX,y,0);
+            com.wurmonline.server.zones.VolaTile wagonTile=com.wurmonline.server.zones.Zones
+                    .getOrCreateTile(wagon.getTileX(),wagon.getTileY(),true);
+            Object original=watchers.get(wagonTile);
+            watchers.set(wagonTile,fixture);
+            try {
+                int before=capturedRotations;
+                move.invoke(null,new org.wurmrail.core.RailNetwork.Pose(engine.getWurmId(),engine.getPosX()+.1f,y,90,0),null,batch);
+                move.invoke(null,new org.wurmrail.core.RailNetwork.Pose(wagon.getWurmId(),wagonX+.1f,y,90,0),null,batch);
+                require(capturedRotations==before&&Math.abs(engine.getPosX()-wagon.getPosX()-4f)<.0001,
+                        "locomotive and wagon reach their full separation before sending the consist");
+                send.invoke(batch);
+                require(capturedRotations==before+2&&capturedRotationItem==wagon.getWurmId()
+                            && capturedX==wagon.getPosX()&&capturedY==wagon.getPosY()&&capturedZ==wagon.getPosZ(),
+                        "one authoritative movement packet per car is sent after the consist moves");
+            } finally {
+                watchers.set(wagonTile,original);
+                com.wurmonline.server.Items.destroyItem(wagon.getWurmId());
+            }
         }
 
         /** No constructor or session is started: only the native communicator boundary is needed. */

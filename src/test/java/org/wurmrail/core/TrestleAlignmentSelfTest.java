@@ -43,9 +43,49 @@ public final class TrestleAlignmentSelfTest {
         roundedSurveys();
         curvedConsist();
         waypointHairpin();
+        fitUnevenWaypoints();
         variableGrades();
         automaticTerrainFit();
+        automaticDeckGrades();
         System.out.println("TrestleAlignmentSelfTest: exact waypoint and tile layout, coupled hairpin and straight poses, radius limits and legacy/new restart passed.");
+    }
+
+    private static void fitUnevenWaypoints() throws Exception {
+        List<Point> marks = Arrays.asList(new Point(3998,5684,46.4), new Point(3998,5674,0),
+                new Point(3978,5662,0), new Point(3962,5662,0), new Point(3942,5682,0),
+                new Point(3922,5730,0), new Point(3930,5754,0), new Point(3952,5754,31.9));
+        rejects(() -> TrestleAlignment.waypoints(marks,12,600,.5,0,2));
+        TrestleAlignment fitted = TrestleAlignment.fitWaypoints(marks,12,600,0,2)
+                .withWaypointElevations(Arrays.asList(null,41d,null,null,34d,null),.5);
+        for (int i=0;i<fitted.waypointDistances().size();i++) {
+            Point point=fitted.at(fitted.waypointDistances().get(i)), mark=marks.get(i+1);
+            check(point.x==mark.x && point.y==mark.y);
+        }
+        check(Math.abs(fitted.headingAt(0)) < .0001 && fitted.headingAt(fitted.length)==90);
+        RailNetwork network=new RailNetwork();
+        List<String> rails=linkSurveyedSpan(network,"Fit",fitted,999,1421,988,1438);
+        RailNetwork.Train train=network.createTrain("Joins",1,Arrays.asList(1001L),rails.get(0),rails.get(1));
+        network.start(train.name);
+        network.tick(.1);
+        java.lang.reflect.Method poses=RailNetwork.class.getDeclaredMethod("poses",RailNetwork.Train.class,double.class);
+        poses.setAccessible(true);
+        for (double chainage : new double[]{2-1e-6,2,2+1e-6}) {
+            RailNetwork.Pose join=(RailNetwork.Pose)((List<?>)poses.invoke(network,train,chainage)).get(0);
+            check(join.x==3998 && join.y==5684 && join.elevation==46.4f);
+        }
+        network.stop(train.name);
+        network.removeTrain(train.name);
+        Path directory=Files.createTempDirectory("wurmrail-fitted-trestle-");
+        Path file=directory.resolve("network.properties");
+        try {
+            network.save(file);
+            RailNetwork restored=RailNetwork.load(file);
+            for (String rail:rails.subList(1,rails.size()-1))
+                check(network.surveyedPanel(rail).modelName().equals(restored.surveyedPanel(rail).modelName()));
+        } finally {
+            Files.deleteIfExists(file);
+            Files.deleteIfExists(directory);
+        }
     }
 
     private static void automaticTerrainFit() {
@@ -68,6 +108,41 @@ public final class TrestleAlignmentSelfTest {
         rejects(() -> TrestleHeightFit.fit(baseline,overrides,.5,
                 Arrays.asList(new TrestleHeightFit.Sample(1,47))));
         check(TrestleHeightFit.fit(baseline,Arrays.asList(35d,39d,37d),.5,ground)==baseline);
+    }
+
+    private static void automaticDeckGrades() throws Exception {
+        TrestleAlignment horizontal = TrestleAlignment.waypoints(Arrays.asList(new Point(44,42,30),
+                new Point(66,42,0),new Point(86,42,0),new Point(106,42,0),new Point(124,42,34)),20,500,.5,2,2);
+        List<Double> overrides = Arrays.asList(null, null, 37d);
+        TrestleAlignment baseline = horizontal.withWaypointElevations(overrides,.5);
+        List<TrestleHeightFit.Sample> ground = Arrays.asList(
+                new TrestleHeightFit.Sample(69.9,37.4), new TrestleHeightFit.Sample(72,37.8),
+                new TrestleHeightFit.Sample(75,36.4));
+        rejects(() -> TrestleHeightFit.fit(baseline,overrides,.5,ground));
+        TrestleAlignment fitted = TrestleHeightFit.fit(baseline,overrides,.5,ground,baseline.tileSections());
+        check(fitted.hasDeckGrades());
+        check(fitted.elevationAt(0)==30 && fitted.elevationAt(62)==37 && fitted.elevationAt(fitted.length)==34);
+        check(fitted.elevationAt(20)==baseline.elevationAt(20));
+        check(fitted.elevationAt(72)>fitted.elevationAt(62) && fitted.elevationAt(72)>fitted.elevationAt(80));
+        check(fitted.maximumAbsoluteGradient()<=.5+1e-9);
+        for (TrestleHeightFit.Sample sample : ground)
+            check(fitted.elevationAt(sample.distance)>=sample.ground-1e-8);
+        rejects(() -> TrestleHeightFit.fit(baseline,overrides,.5,
+                Arrays.asList(new TrestleHeightFit.Sample(79.6,34.39)),baseline.tileSections()));
+
+        RailNetwork network = new RailNetwork();
+        List<String> rails = linkSurveyedSpan(network,"deckGrades",fitted,10,10,31,10);
+        Path directory = Files.createTempDirectory("wurmrail-deck-grades-");
+        Path file = directory.resolve("network.properties");
+        try {
+            network.save(file);
+            RailNetwork restored = RailNetwork.load(file);
+            for (String rail : rails.subList(1,rails.size()-1))
+                check(network.surveyedPanel(rail).modelName().equals(restored.surveyedPanel(rail).modelName()));
+        } finally {
+            Files.deleteIfExists(file);
+            Files.deleteIfExists(directory);
+        }
     }
 
     private static void variableGrades() throws Exception {
