@@ -26,6 +26,34 @@ public final class TrestleAlignment {
         }
     }
 
+    /** The actual rejected curve, for the survey preview only. */
+    public static final class RadiusFailure extends IllegalArgumentException {
+        public final int section;
+        public final List<Point> preview;
+        public final Point tightest;
+        public final double sampledRadius;
+
+        private RadiusFailure(String message, int section, TrestleHermite curve) {
+            super(message);
+            this.section = section;
+            List<Point> points = new ArrayList<>();
+            Point worst = curve.planPoint(0);
+            double peak = 0;
+            for (int i = 0; i <= 128; i++) {
+                double t = i / 128d, curvature = curve.curvatureAt(t);
+                Point point = curve.planPoint(t);
+                if (i % 4 == 0) points.add(point);
+                if (curvature > peak) {
+                    peak = curvature;
+                    worst = point;
+                }
+            }
+            preview = Collections.unmodifiableList(points);
+            tightest = worst;
+            sampledRadius = 1 / peak;
+        }
+    }
+
     private final Point start, end;
     private final List<Section> sections;
     private final double[] origins;
@@ -192,11 +220,11 @@ public final class TrestleAlignment {
         for (int i = 0; i < legs; i++) {
             TrestleHermite section = new TrestleHermite(points.get(i), points.get(i + 1), tangents[i], tangents[i + 1]);
             if (!section.withinRadius(radius))
-                throw new IllegalArgumentException("The curve between " + markName(i, legs) + " and " + markName(i + 1, legs)
+                throw new RadiusFailure("The curve between " + markName(i, legs) + " and " + markName(i + 1, legs)
                         + " is too sharp for the " + (int)(radius / TILE)
                         + "-tile minimum radius. "
                         + (i == 0 || i == legs-1 ? "Give the approach a longer run before the track turns."
-                                : "Move the nearby poles to spread the turn across more distance."));
+                                : "Move the nearby poles to spread the turn across more distance."), i, section);
             section.measure();
             length += section.length();
             sections.add(section);

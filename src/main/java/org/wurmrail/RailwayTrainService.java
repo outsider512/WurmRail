@@ -136,7 +136,7 @@ public final class RailwayTrainService {
 
     private Train register(Item engine, long ownerId) throws Exception {
         requireGroundCar(engine);
-        Node start = nodeAt(engine.getTileX(), engine.getTileY(), engine.isOnSurface() ? 0 : -1);
+        Node start = WurmRailWorld.railAtVehicle(network,engine);
         if (start == null) throw new IllegalArgumentException("Place the locomotive on connected rail first.");
         requireMarker(start);
         String towards = facingExit(network, start, engine.getRotation());
@@ -321,9 +321,6 @@ public final class RailwayTrainService {
             throw new IllegalArgumentException("This rail needs repair before a train can use it.");
     }
 
-    private Node nodeAt(int x, int y, int layer) {
-        return network.nodeAt(x,y,layer);
-    }
 
     private String departureProblem(Node start,Node end) {
         if (network.isElevatedEdge(start.name,end.name)) return null;

@@ -1,6 +1,6 @@
-# WurmRail 2.31.2 — Synchronized consist playback
+# WurmRail 2.31.4 — Trestle overpasses
 
-[Download WurmRail for server and client](https://github.com/outsider512/WurmRail/releases/tag/v2.31.2).
+[Download WurmRail for server and client](https://github.com/outsider512/WurmRail/releases/tag/v2.31.4).
 
 A steam railway for Wurm Unlimited: build tracks, couple passenger and cargo
 wagons, drive with friends, or run repeating station routes with signals and
@@ -59,8 +59,8 @@ modloaders are not bundled; use your own licensed game installation.
 
 | Archive | Contents | Use |
 | --- | --- | --- |
-| `WurmRail-2.31.2-server.zip` | Server mod, server installer and guides | Server installation/update |
-| `WurmRail-2.31.2-client.zip` | Client support/model pack, client installer and guides | Installation on each player's PC |
+| `WurmRail-2.31.4-server.zip` | Server mod, server installer and guides | Server installation/update |
+| `WurmRail-2.31.4-client.zip` | Client support/model pack, client installer and guides | Installation on each player's PC |
 
 Install the matching server and client updates for the survey map, sloped deck
 models and on-foot movement.
@@ -897,7 +897,7 @@ Native checks supplement a graphical multiplayer playtest; they do not open
 a live game window.
 
 To recheck the share archives and their checksum files, run
-`python tools/verify_release.py 2.31.2` from the source workspace.
+`python tools/verify_release.py 2.31.4` from the source workspace.
 
 Integrations use absolute compass directions (N=0 through NW=7).
 `RailNetwork.getJunctionAlignment`, `setJunctionAlignment`,

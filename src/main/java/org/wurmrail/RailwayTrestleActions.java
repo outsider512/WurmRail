@@ -28,7 +28,7 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
     interface Api {
         boolean canSurvey(Creature actor);
         boolean hasSurvey(Creature actor);
-        String trestleAt(int x, int y);
+        String trestleAt(int x, int y, long marker);
         void submit(Creature actor, Operation operation, long tool, int x, int y, long target);
     }
 
@@ -121,7 +121,7 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
     private boolean acceptsTile(Creature actor, Item tool, int x, int y) {
         if (operation == Operation.REMOVE)
             return actor != null && actor.getPower() >= 2 && ownsTool(actor,tool,ItemList.dioptra)
-                    && reachable(actor,x,y) && api.trestleAt(x,y) != null;
+                    && reachableForRemoval(actor,x,y) && api.trestleAt(x,y,-10L) != null;
         return operation != Operation.MARK && operation != Operation.WAYPOINT && ownsTool(actor, tool, ItemList.dioptra)
                 && api.canSurvey(actor) && reachable(actor, x, y)
                 && (operation != Operation.OPEN || api.hasSurvey(actor));
@@ -135,9 +135,10 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
         if (operation == Operation.MARK || operation == Operation.WAYPOINT)
             return target.getTemplateId() == ItemList.rangePole && api.hasSurvey(actor) && api.canSurvey(actor)
                     && ownsTool(actor, tool, ItemList.dioptra) && reachable(actor, x, y);
-        return (target.getTemplateId() == WurmRailWorld.trackTemplateId
-                || operation == Operation.REMOVE && target.getTemplateId() == WurmRailWorld.trestleDeckTemplateId)
-                && acceptsTile(actor, tool, x, y);
+        if (operation == Operation.REMOVE)
+            return actor != null && actor.getPower() >= 2 && ownsTool(actor,tool,ItemList.dioptra)
+                    && reachableForRemoval(actor,x,y) && api.trestleAt(x,y,target.getWurmId()) != null;
+        return target.getTemplateId() == WurmRailWorld.trackTemplateId && acceptsTile(actor, tool, x, y);
     }
 
     static boolean ownsTool(Creature actor, Item item, int template) {
@@ -148,8 +149,16 @@ final class RailwayTrestleActions implements ModAction, ActionPerformer, Behavio
     }
 
     static boolean reachable(Creature actor, int x, int y) {
+        return nearby(actor,x,y) && actor.getFloorLevel() == 0;
+    }
+
+    static boolean reachableForRemoval(Creature actor, int x, int y) {
+        return nearby(actor,x,y) && (actor.getFloorLevel() == 0 || TrestleWalkingWorld.needsExplicitHeight(actor));
+    }
+
+    private static boolean nearby(Creature actor,int x,int y) {
         return actor != null && actor.isPlayer() && actor.isOnSurface()
-                && actor.getBridgeId() == -10L && actor.getFloorLevel() == 0
+                && actor.getBridgeId() == -10L
                 && Math.hypot(actor.getPosX() - (4.0 * x + 2), actor.getPosY() - (4.0 * y + 2)) <= 8;
     }
 }

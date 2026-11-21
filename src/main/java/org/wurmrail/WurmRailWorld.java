@@ -46,6 +46,8 @@ import org.gotti.wurmunlimited.modsupport.vehicles.ModVehicleBehaviour;
 import org.gotti.wurmunlimited.modsupport.vehicles.ModVehicleBehaviours;
 import org.gotti.wurmunlimited.modsupport.vehicles.VehicleFacade;
 import org.wurmrail.core.RailNetwork.Pose;
+import org.wurmrail.core.RailNetwork;
+import org.wurmrail.core.RailNetwork.Node;
 import org.wurmrail.core.RailNetwork.ApproachSeam;
 import org.wurmrail.shared.RailConsistFrame;
 
@@ -469,6 +471,23 @@ public final class WurmRailWorld {
     public static float groundHeight(double x, double y, int layer) throws Exception {
         requireValidPosition(x, y, layer);
         return railHeight(x, y, layer, RailwayBridgeDeck.partAt((int)(x/4), (int)(y/4), layer));
+    }
+
+    static Node railAtVehicle(RailNetwork network,Item vehicle) {
+        List<Node> rails = network.nodesAt(vehicle.getTileX(),vehicle.getTileY(),vehicle.isOnSurface() ? 0 : -1);
+        if (rails.size() <= 1) return rails.isEmpty() ? null : rails.get(0);
+        Node nearest = null;
+        float gap = Float.POSITIVE_INFINITY;
+        for (Node rail : rails) {
+            Item marker = Items.getItemOptional(rail.markerId).orElse(null);
+            if (marker == null) continue;
+            float difference = Math.abs(marker.getPosZ()-vehicle.getPosZ());
+            if (difference < gap) {
+                nearest = rail;
+                gap = difference;
+            }
+        }
+        return nearest;
     }
 
     private static float railHeight(double x, double y, int layer, BridgePart deck) throws Exception {

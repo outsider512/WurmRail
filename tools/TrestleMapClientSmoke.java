@@ -62,6 +62,21 @@ public final class TrestleMapClientSmoke {
         render.invoke(map,queue,0f);
         if (queue.getQueueCount()<20 || !painted.toString().contains("Start End 1 "))
             throw new AssertionError("Route, compass, or map marks were not rendered: "+queue.getQueueCount()+" "+painted);
-        System.out.println("PASS native survey map BML, route line, compass and labelled poles in the HUD");
+        ByteBuffer issue = ByteBuffer.allocate(2 + 34*4);
+        issue.putShort((short)1).putShort((short)310).putShort((short)35);
+        for (int i = 0; i <= 32; i++)
+            issue.putShort((short)(170+i*9)).putShort((short)(71-36*Math.sin(Math.PI*i/32)));
+        String diagnostic = Base64.getUrlEncoder().withoutPadding().encodeToString(issue.array());
+        Element problem = (Element)new XMLParser().parseBMLString(
+                "label{text=\"Fallback\";trestlemap=\"" + payload + "\";trestlemapissue=\"" + diagnostic + "\"}")
+                .getElementsByTagName("label").item(0);
+        FlexComponent rejected = (FlexComponent)parse.invoke(window,problem);
+        rejected.setLocation(10,20,512,192);
+        text.set(rejected,text.get(map));
+        int before = queue.getQueueCount();
+        render.invoke(rejected,queue,0f);
+        if (!painted.toString().contains("Red: rejected curve") || queue.getQueueCount()-before < 50)
+            throw new AssertionError("Rejected curve, hotspot, and legend were not rendered");
+        System.out.println("PASS native survey map BML, approved route, rejected curve, hotspot and labelled poles");
     }
 }

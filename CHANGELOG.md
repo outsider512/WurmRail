@@ -1,5 +1,18 @@
 # WurmRail release notes
 
+## 2.31.4
+
+- Build independently supported trestles over existing surface rails or
+  trestles. Surveys check rail clearance and the proposed timber locations.
+  Trains and players can use either elevation, and each span can be removed
+  separately.
+
+## 2.31.3
+
+- Show the rejected curve, its tightest point and the active minimum radius in
+  the trestle survey. Zoom to the problem and see which pole adjustments could
+  make room for the turn.
+
 ## 2.31.2
 
 - Send visible locomotive and wagon positions together on the server's movement

@@ -30,6 +30,20 @@ uses custom rails, decking, stringers, and stacked timber bents. Install the
 matching client update for these models. The build message includes the span
 name.
 
+## Crossing an existing railway
+
+Survey the upper trestle after the lower track is in place. The lower track can
+be ordinary surface rail or another trestle. Use ground approaches and leave at
+least 4 metres between the rail elevations where the routes overlap. The survey
+checks the full deck pieces and can require extra room where a deck slopes or
+turns. Each timber bent goes to ground. If a bent would intersect the lower
+line or its timber, adjust the route or the configured bent spacing and preview
+again. Trains can use both routes independently.
+
+At a tile shared by two trestles, activate the dioptra and select the deck piece
+for the span you want to remove. You can also select an unshared tile on that
+span or remove it by name.
+
 ## Removing a trestle
 
 As a GM, activate a dioptra and right-click a surface tile in the registered
@@ -102,6 +116,10 @@ The north-up map shows the start, destination and numbered poles. Use
 that part of the route. **Fit map** returns to the whole crossing. Map
 controls keep the elevations entered in the window.
 
+If a curve is too tight, the map draws the rejected curve in red and marks its
+tightest sampled point. The window shows the tile, the minimum radius and
+which poles to adjust. **Zoom to tight turn** centers the problem on the map.
+
 ## In-game verification
 
 In a disposable world, survey a 50-tile valley crossing from a straight rail
@@ -120,12 +138,11 @@ the same span and verify that the deck and rails still meet at the joins.
 
 ## Persistent elevated track
 
-WurmRail's existing graph assigns one node to each occupied tile and routes
-trains using adjacency between nodes. Its position sampler evaluates a
-quadratic Bezier for each traversed tile, and the world adapter currently
-resolves Z from terrain or a native solid bridge deck. The client already
-receives explicit Z movement updates and uses terrain or the native deck for
-rail mesh deformation and vehicle tilt.
+WurmRail routes trains through links between named track nodes. At a
+grade-separated crossing, each route has its own node on the shared tile.
+The sampler uses terrain or a native bridge deck for ordinary rail and the
+saved elevation profile for trestles. The client receives explicit Z
+movement updates and samples the corresponding surface for vehicle tilt.
 
 The core can now associate a straight height profile with linked surface rails.
 Each coupled car samples its own absolute Z in either direction. Networks with
@@ -136,7 +153,9 @@ New waypoint spans use format 8, which records their curve type and approach
 headings. Spans with fitted or fixed elevations save the resulting height at each
 pole. Spans with automatic grades between poles use format 9 to save those
 additional elevations. Existing format 7 trestles retain their original lines
-and circular arcs.
+and circular arcs. New trestle decks use format 10 so each route on a shared
+tile keeps its own track, marker and span membership. Older network saves still
+load.
 Previously built waypoint spans retain their original grades. Each locomotive
 and wagon samples its position along the saved alignment. Curved deck pieces
 use that same alignment to reconstruct their mesh and walking surface.

@@ -2,6 +2,7 @@ package org.wurmrail;
 
 import org.wurmrail.core.TrestleAlignment;
 import org.wurmrail.core.TrestleAlignment.Point;
+import org.wurmrail.core.TrestleAlignment.RadiusFailure;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -13,7 +14,8 @@ final class TrestleSurveyMap {
     static final int MAX_ZOOM = 5;
     private TrestleSurveyMap() { }
 
-    static String encode(List<Point> marks, TrestleAlignment alignment, int zoom, int focus) {
+    static void appendPayload(StringBuilder label, List<Point> marks, TrestleAlignment alignment,
+                              int zoom, int focus, RadiusFailure issue) {
         List<Point> route = new ArrayList<>();
         if (alignment != null) {
             TreeSet<Double> distances = new TreeSet<>(alignment.waypointDistances());
@@ -25,22 +27,34 @@ final class TrestleSurveyMap {
         }
         double left = Double.POSITIVE_INFINITY, right = Double.NEGATIVE_INFINITY;
         double top = left, bottom = right;
-        List<Point> footprint = route.isEmpty() ? marks : route;
+        List<Point> footprint = new ArrayList<>(route.isEmpty() ? marks : route);
+        if (issue != null) footprint.addAll(issue.preview);
         for (Point point : footprint) {
             left = Math.min(left, point.x);
             right = Math.max(right, point.x);
             top = Math.min(top, point.y);
             bottom = Math.max(bottom, point.y);
         }
-        double x = zoom > 0 && focus > 0 ? marks.get(focus-1).x : (left+right)/2;
-        double y = zoom > 0 && focus > 0 ? marks.get(focus-1).y : (top+bottom)/2;
+        Point centre = null;
+        if (zoom > 0 && focus > 0)
+            centre = focus <= marks.size() ? marks.get(focus-1) : issue == null ? null : issue.tightest;
+        double x = centre == null ? (left+right)/2 : centre.x;
+        double y = centre == null ? (top+bottom)/2 : centre.y;
         double scale = Math.min(448 / Math.max(4, right-left), 144 / Math.max(4, bottom-top))
                 * Math.pow(1.5,zoom);
         ByteBuffer data = ByteBuffer.allocate(4 + (marks.size()+route.size())*4);
         data.putShort((short)route.size()).putShort((short)marks.size());
         writePoints(data, route, x, y, scale);
         writePoints(data, marks, x, y, scale);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(data.array());
+        Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+        label.append("trestlemap=\"").append(encoder.encodeToString(data.array())).append("\";");
+        if (issue != null) {
+            ByteBuffer diagnostic = ByteBuffer.allocate(2 + 4*(issue.preview.size()+1));
+            diagnostic.putShort((short)issue.section);
+            writePoints(diagnostic, java.util.Collections.singletonList(issue.tightest), x, y, scale);
+            writePoints(diagnostic, issue.preview, x, y, scale);
+            label.append("trestlemapissue=\"").append(encoder.encodeToString(diagnostic.array())).append("\";");
+        }
     }
 
     private static void writePoints(ByteBuffer data, List<Point> points, double x, double y, double scale) {

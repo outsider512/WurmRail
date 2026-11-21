@@ -177,7 +177,8 @@ public final class TrafficRuntimeSmoke {
     }
     private static void control(WurmRailRuntime runtime,RailwayTrainUi.Api api,Creature actor,Item engine,Train train,RailwayTrainUi.Request request) throws Exception {
         position(actor,engine);api.submit(actor,engine.getWurmId(),train,request);
-        set(runtime,"lastTick",System.nanoTime());set(runtime,"lastDiscovery",System.nanoTime());set(runtime,"lastSave",System.currentTimeMillis());runtime.onServerPoll();
+        // This poll applies the queued control only. speedTrace advances the simulation in fixed steps.
+        set(runtime,"lastTick",Long.MAX_VALUE);set(runtime,"lastDiscovery",System.nanoTime());set(runtime,"lastSave",System.currentTimeMillis());runtime.onServerPoll();
     }
     private static Properties answer(String button) { Properties result=new Properties();result.setProperty(button,"true");return result; }
     private static void runCase(boolean nearJunction) throws Exception {

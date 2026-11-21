@@ -32,15 +32,22 @@ final class TrestleHermite extends TrestleAlignment.Section {
     double peakCurvature() {
         double peak = 0;
         for (int i = 0; i <= LENGTH_STEPS; i++) {
-            double t = i / (double)LENGTH_STEPS, u = 1 - t;
-            double vx = derivative(t, 0), vy = derivative(t, 1);
-            double ax = 2 * (u * (middle[0] - first[0]) + t * (last[0] - middle[0]));
-            double ay = 2 * (u * (middle[1] - first[1]) + t * (last[1] - middle[1]));
-            double speed = Math.hypot(vx, vy);
-            if (speed < 1e-8) return Double.POSITIVE_INFINITY;
-            peak = Math.max(peak, Math.abs(vx * ay - vy * ax) / (speed * speed * speed));
+            peak = Math.max(peak, curvatureAt(i / (double)LENGTH_STEPS));
         }
         return peak;
+    }
+
+    double curvatureAt(double t) {
+        double u = 1 - t;
+        double vx = derivative(t, 0), vy = derivative(t, 1);
+        double ax = 2 * (u * (middle[0] - first[0]) + t * (last[0] - middle[0]));
+        double ay = 2 * (u * (middle[1] - first[1]) + t * (last[1] - middle[1]));
+        double speed = Math.hypot(vx, vy);
+        return speed < 1e-8 ? Double.POSITIVE_INFINITY : Math.abs(vx * ay - vy * ax) / (speed * speed * speed);
+    }
+
+    Point planPoint(double t) {
+        return new Point(coordinate(t, 0), coordinate(t, 1), 0);
     }
 
     private static boolean checkRadius(double[] a, double[] b, double[] c, double span,

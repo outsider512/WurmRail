@@ -47,7 +47,23 @@ public final class TrestleAlignmentSelfTest {
         variableGrades();
         automaticTerrainFit();
         automaticDeckGrades();
+        rejectedRadiusPreview();
         System.out.println("TrestleAlignmentSelfTest: exact waypoint and tile layout, coupled hairpin and straight poses, radius limits and legacy/new restart passed.");
+    }
+
+    private static void rejectedRadiusPreview() {
+        List<Point> marks = Arrays.asList(new Point(1952,2114,131.8),
+                new Point(1950,2114,0), new Point(1914.7,2170,0), new Point(1916,2170,149.9));
+        try {
+            TrestleAlignment.fitWaypoints(marks,12,500,6,2);
+            throw new AssertionError("Expected a rejected tight turn.");
+        } catch (TrestleAlignment.RadiusFailure failure) {
+            check(failure.section == 1 && failure.preview.size() == 33);
+            Point first = failure.preview.get(0), last = failure.preview.get(32);
+            check(first.x == marks.get(1).x && first.y == marks.get(1).y);
+            check(last.x == marks.get(2).x && last.y == marks.get(2).y);
+            check(failure.sampledRadius < 12 && Double.isFinite(failure.tightest.x));
+        }
     }
 
     private static void fitUnevenWaypoints() throws Exception {

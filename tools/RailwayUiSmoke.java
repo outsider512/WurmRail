@@ -459,6 +459,236 @@ public final class RailwayUiSmoke {
         System.out.println("PASS native trestle survey, 50% grade boundary, GM construction, locomotive crossing and saved deck and timber");
     }
 
+    public static void runTrestleOverpasses() throws Exception {
+        for (boolean stacked : new boolean[]{false,true}) {
+            org.wurmrail.WurmRailRuntime runtime = new org.wurmrail.WurmRailRuntime();
+            runtime.configure(new java.util.Properties());
+            org.wurmrail.core.RailNetwork network = new org.wurmrail.core.RailNetwork();
+            java.nio.file.Path save = java.nio.file.Paths.get("trestle-test",stacked ? "stacked.properties" : "over-rail.properties");
+            for (String field : new String[]{"network","ready","stateFile"}) {
+                Field member = runtime.getClass().getDeclaredField(field);
+                member.setAccessible(true);
+                member.set(runtime,field.equals("network") ? network : field.equals("ready") ? true : save);
+            }
+            Field queue = runtime.getClass().getDeclaredField("requests");
+            queue.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Queue<Runnable> requests = (java.util.Queue<Runnable>)queue.get(runtime);
+            int first = ModActions.getNextActionId();
+            runtime.init();
+            short start = (short)first, mark = (short)(first+1), remove = (short)(first+4);
+            int low = 116, high = 123, crossing = 120;
+            float mid = center(crossing);
+            com.wurmonline.mesh.MeshIO mesh = com.wurmonline.server.Server.surfaceMesh;
+            int[][] original = new int[10][10];
+            for (int dx=0;dx<10;dx++) for (int dy=0;dy<10;dy++) {
+                original[dx][dy]=mesh.getTile(low-1+dx,low-1+dy);
+                overpassTerrain(mesh,low-1+dx,low-1+dy,50);
+            }
+            com.wurmonline.server.players.Player actor = PassengerWorldSmoke.player(stacked ? 714002448L : 714002192L,mid,mid);
+            Field possessions = Creature.class.getDeclaredField("possessions");
+            possessions.setAccessible(true);
+            possessions.set(actor,new com.wurmonline.server.items.Possessions(actor));
+            Item tool = com.wurmonline.server.items.ItemFactory.createItem(
+                    com.wurmonline.server.items.ItemList.dioptra,50f,"Overpass fixture");
+            check(actor.getInventory().insertItem(tool,true),"overpass survey has a dioptra");
+            java.util.List<Item> cars = new java.util.ArrayList<>();
+            try {
+                float lowerHeight = stacked ? 12 : 5;
+                if (stacked) {
+                    for (int edge : new int[]{low,low+1,high,high+1})
+                        for (int x : new int[]{crossing,crossing+1}) overpassTerrain(mesh,x,edge,120);
+                    previewOverpass(actor,tool,requests,start,mark,crossing,low,crossing,high,lowerHeight);
+                    buildOverpass(actor,requests);
+                } else {
+                    org.wurmrail.core.RailNetwork.Node previous = null;
+                    for (int y=low;y<=high;y++) {
+                        org.wurmrail.core.RailNetwork.Node rail = network.addNode("under_"+y,crossing,y,0);
+                        rail.markerId = WurmRailWorld.spawnTrackMarker(actor,mid,center(y),0).getWurmId();
+                        if (previous != null) network.connect(previous.name,rail.name);
+                        previous=rail;
+                    }
+                }
+                org.wurmrail.core.RailNetwork.Node lower = network.nodeAt(crossing,crossing,0);
+                float tooLow = lowerHeight+2;
+                setOverpassBank(mesh,low,high,crossing,(int)(tooLow*10));
+                previewOverpass(actor,tool,requests,start,mark,low,crossing,high,crossing,tooLow);
+                check(surveyBml.contains("4.0 m clearance") && !surveyBml.contains("GM build straight trestle"),
+                        "survey rejects an upper deck too close to "+(stacked ? "a lower trestle" : "ground rail"));
+
+                float upperHeight = 20;
+                setOverpassBank(mesh,low,high,crossing,(int)(upperHeight*10));
+                if (!stacked) {
+                    org.wurmrail.core.RailNetwork.Node obstruction = network.addNode("under_bent",low+2,crossing,0);
+                    obstruction.markerId=WurmRailWorld.spawnTrackMarker(actor,center(low+2),mid,0).getWurmId();
+                    previewOverpass(actor,tool,requests,start,mark,low,crossing,high,crossing,upperHeight);
+                    check(surveyBml.contains("timber bent conflicts with under_bent"),
+                            "survey rejects a ground-founded support through the lower rail");
+                    com.wurmonline.server.Items.destroyItem(obstruction.markerId);
+                    network.removeNode(obstruction.name);
+                }
+                // Leave a locomotive on the lower line while the GM constructs the upper span.
+                Item parked = WurmRailWorld.spawnLocomotive(actor,mid,mid,0);
+                cars.add(parked);
+                if (stacked) parked.setPosZ(lowerHeight);
+                previewOverpass(actor,tool,requests,start,mark,low,crossing,high,crossing,upperHeight);
+                buildOverpass(actor,requests);
+                com.wurmonline.server.Items.destroyItem(parked.getWurmId());
+                cars.remove(parked);
+                java.util.List<org.wurmrail.core.RailNetwork.Node> rails = network.nodesAt(crossing,crossing,0);
+                check(rails.size()==2 && rails.contains(lower),"GM build preserves the lower line and adds an upper node");
+                org.wurmrail.core.RailNetwork.Node upper = rails.get(0)==lower ? rails.get(1) : rails.get(0);
+                check(!lower.links.contains(upper.name),"overlapping rails stay disconnected");
+                if (!stacked) {
+                    // A failed ground-track removal restores this row even with a deck above it.
+                    List<String> links = new java.util.ArrayList<>(lower.links);
+                    long marker = lower.markerId;
+                    network.removeNode(lower.name);
+                    lower = network.addNode(lower.name,crossing,crossing,0);
+                    lower.markerId = marker;
+                    for (String link : links) network.connect(lower.name,link);
+                    check(network.nodeAt(crossing,crossing,0)==lower && network.nodesAt(crossing,crossing,0).contains(upper),
+                            "restoring the ordinary track beneath the overpass preserves both routes");
+                }
+                check(Math.abs(org.wurmrail.TrestleWalkingWorld.height(mid,mid,upperHeight)-upperHeight)<.001,
+                        "native walking resolves the upper deck");
+                float walkBelow = org.wurmrail.TrestleWalkingWorld.height(mid,mid,lowerHeight);
+                check(stacked ? Math.abs(walkBelow-lowerHeight)<.001 : Float.isNaN(walkBelow),
+                        "native walking resolves the lower deck or leaves ordinary terrain in control");
+                checkOverpassWalking(actor,mid,upperHeight,90);
+                if (stacked) checkOverpassWalking(actor,mid,lowerHeight,180);
+
+                java.lang.reflect.Method apply = runtime.getClass().getDeclaredMethod("applyPoses",org.wurmrail.core.RailNetwork.Train.class);
+                apply.setAccessible(true);
+                org.wurmrail.core.RailNetwork.Train below = overpassTrain(actor,network,cars,"Below",crossing,low,crossing,low+1);
+                org.wurmrail.core.RailNetwork.Train above = overpassTrain(actor,network,cars,"Above",low,crossing,low+1,crossing);
+                apply.invoke(runtime,below);
+                apply.invoke(runtime,above);
+                network.start(below.name);
+                network.start(above.name);
+                boolean simultaneous = false;
+                for (int tick=0;tick<160;tick++) {
+                    network.tick(.1);
+                    apply.invoke(runtime,below);
+                    apply.invoke(runtime,above);
+                    if (Math.abs(cars.get(0).getPosY()-mid)<.65 && Math.abs(cars.get(1).getPosX()-mid)<.65) {
+                        check(Math.abs(cars.get(0).getPosZ()-lowerHeight)<.001 && Math.abs(cars.get(1).getPosZ()-upperHeight)<.001,
+                                "native vehicles keep their own height while crossing simultaneously");
+                        simultaneous = true;
+                        network.save(save);
+                        org.wurmrail.core.RailNetwork loaded = org.wurmrail.core.RailNetwork.load(save);
+                        check(loaded.nodesAt(crossing,crossing,0).size()==2 && loaded.trains.size()==2
+                                        && loaded.nodes.get(upper.name).markerId==upper.markerId,
+                                "save and reload preserves both crossing routes and their trains");
+                    }
+                }
+                check(simultaneous && cars.get(0).getPosY()>mid+4 && cars.get(1).getPosX()>mid+4,
+                        "both native trains run through the crossing");
+                for (org.wurmrail.core.RailNetwork.Train train : new org.wurmrail.core.RailNetwork.Train[]{below,above})
+                    network.removeTrain(train.name);
+                for (Item car : cars) com.wurmonline.server.Items.destroyItem(car.getWurmId());
+                cars.clear();
+
+                actor.getStatus().setPositionXYZ(mid,mid,lowerHeight);
+                if (stacked) {
+                    Item lowerDeck = com.wurmonline.server.Items.getItem(lower.markerId);
+                    check(has(((BehaviourProvider)performer(remove)).getBehavioursFor(actor,tool,lowerDeck),remove),
+                            "the lower deck offers its own removal action at the crossing");
+                    dispatchSurvey(actor,tool,lower.markerId,remove);
+                    check(requests.size()==1,"the lower marker selects its own span on the shared tile. "+surveyMessage);
+                    requests.remove().run();
+                    confirmOverpassRemoval(actor,requests);
+                    check(network.nodesAt(crossing,crossing,0).get(0)==upper
+                                    && Math.abs(org.wurmrail.TrestleWalkingWorld.height(mid,mid,upperHeight)-upperHeight)<.001,
+                            "removing the lower trestle leaves the upper track and walking surface intact");
+                }
+                actor.getStatus().setPositionXYZ(mid,mid,upperHeight);
+                dispatchSurvey(actor,tool,upper.markerId,remove);
+                check(requests.size()==1,"the upper marker selects its own span on the shared tile");
+                requests.remove().run();
+                confirmOverpassRemoval(actor,requests);
+                check(stacked ? network.nodes.isEmpty() : network.nodeAt(crossing,crossing,0)==lower && lower.links.size()==2,
+                        "removing the upper trestle preserves unrelated track");
+            } finally {
+                for (Item car : cars) com.wurmonline.server.Items.destroyItem(car.getWurmId());
+                for (org.wurmrail.core.RailNetwork.Node rail : network.nodes.values()) {
+                    com.wurmonline.server.Items.destroyItem(rail.markerId);
+                    for (long id : rail.timber()) com.wurmonline.server.Items.destroyItem(id);
+                }
+                com.wurmonline.server.Items.destroyItem(tool.getWurmId());
+                PassengerWorldSmoke.removePlayer(actor);
+                for (int dx=0;dx<10;dx++) for (int dy=0;dy<10;dy++)
+                    mesh.setTile(low-1+dx,low-1+dy,original[dx][dy]);
+            }
+            System.out.println("PASS native trestle over "+(stacked ? "trestle" : "ordinary rail")
+                    +": clearance, concurrent trains, walking, save and independent removal");
+        }
+    }
+
+    private static float center(int tile) { return tile*4+2; }
+
+    private static void checkOverpassWalking(Creature actor,float middle,float height,int heading) throws Exception {
+        com.wurmonline.shared.util.MovementChecker movement = actor.getMovementScheme();
+        float x = middle-(heading==90 ? 1 : 0), y = middle-(heading==180 ? 1 : 0);
+        movement.setPosition(x,y,height,heading,0);
+        movement.started = true;
+        for (int i=0;i<100 && (heading==90 ? movement.getX() : movement.getY())<middle+.5;i++) {
+            movement.movestep(.4f,movement.getX(),movement.getZ(),movement.getY(),-2500f,2500f,heading,(byte)1,0);
+            check(Math.abs(movement.getZ()-height)<.005,"native walker stays on their chosen deck through the crossing");
+        }
+        check((heading==90 ? movement.getX() : movement.getY())>=middle+.5,"native walker passes the intersection");
+        actor.getStatus().setPositionXYZ(middle,middle,height);
+        check(org.wurmrail.TrestleWalkingWorld.needsExplicitHeight(actor),"observers receive the elevated walking height");
+    }
+
+    private static void overpassTerrain(com.wurmonline.mesh.MeshIO mesh,int x,int y,int dirt) {
+        mesh.setTile(x,y,com.wurmonline.mesh.Tiles.encode((short)dirt,com.wurmonline.mesh.Tiles.Tile.TILE_DIRT.id,(byte)0));
+    }
+
+    private static void setOverpassBank(com.wurmonline.mesh.MeshIO mesh,int low,int high,int row,int dirt) {
+        for (int edge : new int[]{low,low+1,high,high+1})
+            for (int y : new int[]{row,row+1}) overpassTerrain(mesh,edge,y,dirt);
+    }
+
+    private static void previewOverpass(Creature actor,Item tool,java.util.Queue<Runnable> requests,short start,short mark,
+                                        int x,int y,int endX,int endY,float height) throws Exception {
+        Item pole = com.wurmonline.server.items.ItemFactory.createItem(
+                com.wurmonline.server.items.ItemList.rangePole,50f,center(endX),center(endY),0,true,(byte)0,-10L,"Overpass fixture");
+        try {
+            actor.getStatus().setPositionXYZ(center(x),center(y),height);
+            dispatchSurvey(actor,tool,com.wurmonline.mesh.Tiles.getTileId(x,y,0),start);
+            requests.remove().run();
+            actor.getStatus().setPositionXYZ(center(endX),center(endY),height);
+            dispatchSurvey(actor,tool,pole.getWurmId(),mark);
+            requests.remove().run();
+        } finally {
+            com.wurmonline.server.Items.destroyItem(pole.getWurmId());
+        }
+    }
+
+    private static void buildOverpass(Creature actor,java.util.Queue<Runnable> requests) throws Exception {
+        check(surveyBml.contains("GM build straight trestle"),"overpass survey can build. "+surveyBml);
+        java.util.Properties build = new java.util.Properties();
+        build.setProperty("instant","true");
+        latestQuestion(actor).answer(build);
+        requests.remove().run();
+    }
+
+    private static void confirmOverpassRemoval(Creature actor,java.util.Queue<Runnable> requests) throws Exception {
+        java.util.Properties confirmation = new java.util.Properties();
+        confirmation.setProperty("remove","true");
+        latestQuestion(actor).answer(confirmation);
+        requests.remove().run();
+    }
+
+    private static org.wurmrail.core.RailNetwork.Train overpassTrain(Creature actor,org.wurmrail.core.RailNetwork network,
+            java.util.List<Item> cars,String name,int x,int y,int nextX,int nextY) throws Exception {
+        Item engine = WurmRailWorld.spawnLocomotive(actor,center(x),center(y),0);
+        cars.add(engine);
+        return network.createTrain(name,actor.getWurmId(),java.util.Collections.singletonList(engine.getWurmId()),
+                network.nodeAt(x,y,0).name,network.nodeAt(nextX,nextY,0).name);
+    }
+
     private static void removeTrestleAt(Creature actor,Item dioptra,java.util.Queue<Runnable> requests,
                                        short action,int x,int y) throws Exception {
         actor.getStatus().setPositionXYZ(x*4+2,y*4+2,0);
@@ -503,6 +733,7 @@ public final class RailwayUiSmoke {
                     50f,poleX,poleY,0,true,(byte)0,-10L,"Curve fixture");
             end=com.wurmonline.server.items.ItemFactory.createItem(com.wurmonline.server.items.ItemList.rangePole,
                     50f,cornerX,endY,0,true,(byte)0,-10L,"Curve fixture");
+            checkTightTurnPreview(actor,dioptra,requests,start,waypoint,mark,x,y,end);
             actor.getStatus().setPositionXYZ(x*4+2,startY,5);
             dispatchSurvey(actor,dioptra,com.wurmonline.mesh.Tiles.getTileId(x,y,0),start);
             requests.remove().run();
@@ -623,6 +854,38 @@ public final class RailwayUiSmoke {
             if(end!=null)com.wurmonline.server.Items.destroyItem(end.getWurmId());
             for(int a=0;a<original.length;a++) for(int b=0;b<original.length;b++)
                 mesh.setTile(x+a,y+b-3,original[a][b]);
+        }
+    }
+
+    private static void checkTightTurnPreview(Creature actor,Item dioptra,java.util.Queue<Runnable> requests,
+                                             short start,short waypoint,short mark,int x,int y,Item end) throws Exception {
+        float poleX=x*4+5, poleY=y*4+2.8f;
+        Item tight=com.wurmonline.server.items.ItemFactory.createItem(com.wurmonline.server.items.ItemList.rangePole,
+                50f,poleX,poleY,0,true,(byte)0,-10L,"Tight approach fixture");
+        try {
+            actor.getStatus().setPositionXYZ(x*4+2,y*4+2,5);
+            dispatchSurvey(actor,dioptra,com.wurmonline.mesh.Tiles.getTileId(x,y,0),start);
+            requests.remove().run();
+            actor.getStatus().setPositionXYZ(poleX,poleY,5);
+            dispatchSurvey(actor,dioptra,tight.getWurmId(),waypoint);
+            requests.remove().run();
+            actor.getStatus().setPositionXYZ(end.getPosX(),end.getPosY(),6);
+            dispatchSurvey(actor,dioptra,end.getWurmId(),mark);
+            requests.remove().run();
+            check(surveyBml.contains("Zoom to tight turn") && surveyBml.contains("Tightest sampled point")
+                            && surveyBml.contains("Minimum curve radius") && surveyBml.contains("Align the nearby pole")
+                            && !surveyBml.contains("GM build curved trestle"),
+                    "a rejected survey draws and explains the specific curve without allowing construction: "+surveyBml);
+            String original = mapPayload();
+            surveyAnswer(actor,requests,"zoomIssue",null,null);
+            check(!original.equals(mapPayload()),"zoom to tight turn changes the map projection");
+            java.util.regex.Matcher issue = java.util.regex.Pattern.compile("trestlemapissue=\"([a-zA-Z0-9_-]+)\"").matcher(surveyBml);
+            check(issue.find(),"the rejected curve has a diagnostic map payload");
+            java.nio.ByteBuffer data = java.nio.ByteBuffer.wrap(java.util.Base64.getUrlDecoder().decode(issue.group(1)));
+            check(data.getShort()==0 && data.getShort()==256 && data.getShort()==96,
+                    "zoom centres the actual tight spot on the rejected first section");
+        } finally {
+            com.wurmonline.server.Items.destroyItem(tight.getWurmId());
         }
     }
 

@@ -18,6 +18,7 @@ public final class RailNetwork {
     private static final PassengerStopRequest NO_PASSENGER_STOPS = (train, rail, carId) -> false;
     private final Map<String, Node> nodeData = new LinkedHashMap<String, Node>();
     private final Map<Long, Node> tileNodes = new HashMap<>();
+    private final Map<Long, List<Node>> deckNodes = new HashMap<>();
     private final Map<String, Train> trainData = new LinkedHashMap<String, Train>();
     private final Map<String, ElevatedEdge> elevatedEdges = new LinkedHashMap<>();
     private final Map<String, CurvedSpan> curvedSpans = new LinkedHashMap<>();
@@ -55,6 +56,7 @@ public final class RailNetwork {
         public long bridgeId = -10L;
         private List<Long> timber = Collections.emptyList();
         private String trestle;
+        private boolean deckNode;
         public String trestle() { return trestle; }
         public List<Long> timber() { return timber; }
         private final Set<String> linkData = new LinkedHashSet<String>();
@@ -270,19 +272,49 @@ public final class RailNetwork {
     private void alignmentChanged() { alignmentRevision++; cachedJunctions=null; }
 
     public synchronized Node addNode(String name, int x, int y, int layer) {
+        return addNode(name,x,y,layer,false);
+    }
+
+    public synchronized Node addTrestleDeckNode(String name, int x, int y) {
+        return addNode(name,x,y,0,true);
+    }
+
+    private Node addNode(String name, int x, int y, int layer, boolean deck) {
         Node node = new Node(name, x, y, layer);
         if (nodeData.containsKey(node.name)) throw problem("A rail named " + node.name + " already exists.");
         long tile = tileKey(x, y, layer);
-        Node other = tileNodes.get(tile);
-        if (other != null) throw problem("This tile already has rail " + other.name + ".");
-        tileNodes.put(tile, node);
+        node.deckNode = deck;
+        if (deck) {
+            deckNodes.computeIfAbsent(tile, key -> new ArrayList<>()).add(node);
+        } else {
+            Node other = tileNodes.get(tile);
+            if (other != null) throw problem("This tile already has rail " + other.name + ".");
+            tileNodes.put(tile, node);
+        }
         nodeData.put(node.name, node); topologyRevision++;alignmentChanged(); return node;
     }
     private static long tileKey(int x, int y, int layer) {
         return ((long) x << 32) | ((long) y << 1) | (layer == 0 ? 0 : 1);
     }
     public synchronized Node nodeAt(int x, int y, int layer) {
-        return x < 0 || y < 0 || (layer != 0 && layer != -1) ? null : tileNodes.get(tileKey(x, y, layer));
+        if (x < 0 || y < 0 || (layer != 0 && layer != -1)) return null;
+        long key = tileKey(x,y,layer);
+        Node ground = tileNodes.get(key);
+        if (ground != null) return ground;
+        List<Node> decks = deckNodes.get(key);
+        return decks != null && decks.size() == 1 ? decks.get(0) : null;
+    }
+
+    public synchronized List<Node> nodesAt(int x, int y, int layer) {
+        if (x < 0 || y < 0 || (layer != 0 && layer != -1)) return Collections.emptyList();
+        long key = tileKey(x,y,layer);
+        Node ground = tileNodes.get(key);
+        List<Node> decks = deckNodes.get(key);
+        if (decks == null) return ground == null ? Collections.emptyList() : Collections.singletonList(ground);
+        List<Node> rails = new ArrayList<>(decks.size()+1);
+        if (ground != null) rails.add(ground);
+        rails.addAll(decks);
+        return rails;
     }
 
     public synchronized void setTrestleTimber(String rail, List<Long> itemIds) {
@@ -355,6 +387,15 @@ public final class RailNetwork {
         return elevatedEdges.containsKey(edge(first,second));
     }
 
+    public synchronized boolean isTrestleDeck(String name) {
+        Node rail = node(name);
+        for (String link : rail.links) {
+            ElevatedEdge profile = elevatedEdges.get(edge(name,link));
+            if (profile != null && !profile.groundAt(rail)) return true;
+        }
+        return false;
+    }
+
     /** Signed rise per metre of the saved deck in the requested direction. */
     public synchronized double elevatedGradient(String from, String towards) {
         ElevatedEdge profile = elevatedEdges.get(edge(from, towards));
@@ -379,7 +420,13 @@ public final class RailNetwork {
         for (Train t : trainData.values())
             if (t.path.contains(name) || t.route.contains(name)) throw problem("Rail is used by train " + t.name + ".");
         for (String adjacent : new ArrayList<String>(n.links)) disconnect(name, adjacent);
-        nodeData.remove(name); tileNodes.remove(tileKey(n.tileX, n.tileY, n.layer));
+        nodeData.remove(name);
+        long key = tileKey(n.tileX,n.tileY,n.layer);
+        if (n.deckNode) {
+            List<Node> decks = deckNodes.get(key);
+            decks.remove(n);
+            if (decks.isEmpty()) deckNodes.remove(key);
+        } else tileNodes.remove(key);
         lockedJunctions.remove(name);topologyRevision++; alignmentChanged();
     }
     public synchronized void connect(String first, String second) {
@@ -1961,8 +2008,10 @@ public final class RailNetwork {
     }
     private String diagonalCrossing(String first,String second) {
         Node a=node(first),b=node(second);
+        Node deck = a.deckNode ? a : b.deckNode ? b : null;
+        String level = deck != null && deck.trestle != null && isElevatedEdge(first,second) ? ":"+deck.trestle : "";
         return a.tileX!=b.tileX&&a.tileY!=b.tileY ?
-            "X:"+a.layer+":"+Math.min(a.tileX,b.tileX)+":"+Math.min(a.tileY,b.tileY) : null;
+            "X:"+a.layer+":"+Math.min(a.tileX,b.tileX)+":"+Math.min(a.tileY,b.tileY)+level : null;
     }
     private boolean conflicts(Train t,double distance) {
         Set<String> own=resources(t,distance);
@@ -2394,14 +2443,18 @@ public final class RailNetwork {
             if(expected==null || !MessageDigest.isEqual(expected.getBytes("UTF-8"),checksum(p).getBytes("UTF-8"))) throw problem("State checksum does not match.");
             String format=required(p,"format");
             if(!"1".equals(format)&&!"2".equals(format)&&!"3".equals(format)&&!"4".equals(format)
-                    &&!"5".equals(format)&&!"6".equals(format)&&!"7".equals(format)&&!"8".equals(format)&&!"9".equals(format))
+                    &&!"5".equals(format)&&!"6".equals(format)&&!"7".equals(format)&&!"8".equals(format)&&!"9".equals(format)&&!"10".equals(format))
                 throw problem("Unsupported rail state format.");
             RailNetwork net=new RailNetwork();net.maxCars=integer(p,"maxCars",1,64);
             Map<Train,StationTurnback.Plan> loadedTurnbacks=new LinkedHashMap<Train,StationTurnback.Plan>();
             int count=integer(p,"nodes",0,100000);
+            boolean multiDeckFormat = "10".equals(format);
             for(int i=0;i<count;i++) {
                 String k="node."+i+".";
-                Node n=net.addNode(required(p,k+"name"),integer(p,k+"x",0,Integer.MAX_VALUE/4),integer(p,k+"y",0,Integer.MAX_VALUE/4),integer(p,k+"layer",-1,0));
+                boolean deck = multiDeckFormat && p.containsKey(k+"deck") && bool(p,k+"deck");
+                int layer = integer(p,k+"layer",-1,0);
+                if (deck && layer != 0) throw problem("A trestle deck requires the surface layer.");
+                Node n=net.addNode(required(p,k+"name"),integer(p,k+"x",0,Integer.MAX_VALUE/4),integer(p,k+"y",0,Integer.MAX_VALUE/4),layer,deck);
                 n.markerId=Long.parseLong(required(p,k+"marker"));n.station=bool(p,k+"station");n.dwellSeconds=decimal(p,k+"dwell",0,3600);
                 n.bridgeId=Long.parseLong(p.getProperty(k+"bridge","-10"));
                 if(n.bridgeId!=-10L&&n.bridgeId<=0)throw new IllegalArgumentException("Invalid railway bridge ID");
@@ -2429,8 +2482,9 @@ public final class RailNetwork {
                 }
             }
             if(!loadedEntrances.equals(entrances))throw problem("Saved cave entrance is missing its track connection.");
-            boolean curvedFormat = "7".equals(format) || "8".equals(format) || "9".equals(format);
-            if ("5".equals(format)||"6".equals(format)||curvedFormat) {
+            boolean curvedFormat = "7".equals(format) || "8".equals(format) || "9".equals(format)
+                    || multiDeckFormat && p.containsKey("curvedSpans");
+            if ("5".equals(format)||"6".equals(format)||curvedFormat||multiDeckFormat) {
                 int countElevated = integer(p, "elevatedEdges", curvedFormat?0:1, 100000);
                 for (int i = 0; i < countElevated; i++) {
                     String k = "elevated." + i + ".";
@@ -2473,7 +2527,7 @@ public final class RailNetwork {
                         } else if ("rounded".equals(geometry)) {
                             alignment = TrestleAlignment.rounded(points,decimal(p,key+"radius",4,2000),2000,1);
                         } else throw problem("Unknown saved trestle geometry.");
-                        if ("9".equals(format) && p.containsKey(key+"gradePoints")) {
+                        if (("9".equals(format)||multiDeckFormat) && p.containsKey(key+"gradePoints")) {
                             int gradeCount = integer(p,key+"gradePoints",2,TrestleAlignment.MAX_GRADE_POINTS);
                             double[] distances = new double[gradeCount], heights = new double[gradeCount];
                             for (int j=0;j<gradeCount;j++) {
@@ -2500,6 +2554,9 @@ public final class RailNetwork {
             }
             for(int i=0;i<count;i++) {
                 String k="node."+i+".";Node n=net.node(required(p,k+"name"));
+                if (n.deckNode && (n.trestle == null || n.bridgeId != -10L || n.links.size() != 2
+                        || n.links.stream().anyMatch(link -> !net.isElevatedEdge(n.name,link))))
+                    throw problem("Invalid saved trestle deck node.");
                 if(!"1".equals(format)&&!"2".equals(format))net.setJunctionAlignment(n.name,integer(p,k+"alignment",0,255));
                 else {
                     String selection=required(p,k+"selected");
@@ -2586,7 +2643,7 @@ public final class RailNetwork {
                 }
             }
             net.validateLoadedAlignments("1".equals(format)||"2".equals(format));
-            if("4".equals(format)||"5".equals(format)||"6".equals(format)||curvedFormat) {
+            if("4".equals(format)||"5".equals(format)||"6".equals(format)||curvedFormat||multiDeckFormat) {
                 int signalCount=integer(p,"signals",0,800000);
                 for(int i=0;i<signalCount;i++) {
                     String k="signal."+i+".";
@@ -2607,6 +2664,7 @@ public final class RailNetwork {
         if (!curvedSpans.isEmpty()) format=7;
         if (curvedSpans.values().stream().anyMatch(span -> span.alignment.startHeading >= 0)) format=8;
         if (curvedSpans.values().stream().anyMatch(span -> span.alignment.hasDeckGrades())) format=9;
+        if (!deckNodes.isEmpty()) format=10;
         put(p,"format",format);
         put(p,"maxCars",maxCars);put(p,"nodes",nodes.size());put(p,"trains",trains.size());
         int i=0;
@@ -2616,6 +2674,7 @@ public final class RailNetwork {
             if(n.bridgeId!=-10L)put(p,k+"bridge",n.bridgeId);
             if(!n.timber.isEmpty())put(p,k+"timber",join(n.timber));
             if(n.trestle!=null)put(p,k+"trestle",n.trestle);
+            if(n.deckNode)put(p,k+"deck",true);
         }
         i=0;
         for(Node n:nodes.values())for(String linked:n.links) {

@@ -476,6 +476,7 @@ public final class IntegrationSmoke {
             TrainUiAnswersSmoke.run();
             RailwayUiSmoke.run();
             RailwayUiSmoke.runTrestleSurvey();
+            RailwayUiSmoke.runTrestleOverpasses();
             RailwayUiSmoke.runElevatedMotion();
             RailwayUiSmoke.runCurvedMotion();
             TrackMaterialsSmoke.run();

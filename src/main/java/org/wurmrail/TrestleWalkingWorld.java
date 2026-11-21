@@ -18,7 +18,7 @@ public final class TrestleWalkingWorld {
 
     public static boolean needsExplicitHeight(Creature creature) {
         if (!creature.isPlayer() || !creature.isOnSurface() || creature.getBridgeId() > 0L
-                || creature.getVehicle() != -10L || creature.getFloorLevel() > 0)
+                || creature.getVehicle() != -10L)
             return false;
         float feet = creature.getPositionZ();
         float deck = height(creature.getPosX(), creature.getPosY(), feet);

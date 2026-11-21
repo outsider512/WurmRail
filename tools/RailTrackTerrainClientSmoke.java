@@ -252,6 +252,21 @@ public final class RailTrackTerrainClientSmoke {
         check(Math.abs((Float)call(movement,"getHeight",heightArgs,48.25f,44.25f,41.4f)
                         -(40f + (float)Math.sqrt(2))) < .01,
                 "the client samples the visible diagonal plank across its tile boundary");
+        index.remove(diagonal);
+        GroundItemCellRenderable lower = trestlePacket(970000027L,"model.wurmrail.trestledeck.0.0.",46,46,30);
+        GroundItemCellRenderable upper = trestlePacket(970000028L,"model.wurmrail.trestledeck.2.0.",46,46,36);
+        renderer.addRenderable(upper);
+        renderer.addRenderable(lower);
+        for (float level : new float[]{5f,30f,36f}) {
+            movement.setPosition(46f,46f,level,90f,0);
+            check(Math.abs((Float)call(movement,"getHeight",heightArgs,46f,46f,level)-level)<.001,
+                    "overlapping deck packets preserve walking at level "+level);
+        }
+        renderer.removeRenderable(upper,false);
+        movement.setPosition(46f,46f,30f,90f,0);
+        check(Math.abs((Float)call(movement,"getHeight",heightArgs,46f,46f,30f)-30f)<.001,
+                "removing an upper deck packet preserves the lower deck");
+        renderer.removeRenderable(lower,false);
         System.out.println("PASS native client walking on visible trestle decks, diagonal plank overhang, ground under the deck and removal");
     }
 

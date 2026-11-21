@@ -29,6 +29,7 @@ import org.wurmrail.core.RailNetwork;
 import org.wurmrail.core.RailNetwork.Node;
 import org.wurmrail.core.TrestleAlignment;
 import org.wurmrail.core.TrestleAlignment.Point;
+import org.wurmrail.core.TrestleAlignment.RadiusFailure;
 import org.wurmrail.core.TrestleHeightFit;
 import org.wurmrail.shared.TrestleDeckSurface;
 
@@ -44,9 +45,11 @@ final class RailwayTrestleSurvey {
     };
     interface Api {
         Node railAt(int x, int y);
+        boolean hasDeck(int x, int y);
         Node rail(String name);
         boolean trackPresent(Node rail);
-        String trestleAt(int x, int y);
+        String trestleAt(int x, int y, long marker);
+        void validateCrossings(Plan plan) throws Exception;
         void remove(Creature actor, String span) throws Exception;
         void build(Creature actor, Plan plan) throws Exception;
         void submit(Creature actor, Response response);
@@ -71,8 +74,10 @@ final class RailwayTrestleSurvey {
 
     void handle(Creature actor, RailwayTrestleActions.Operation operation, long tool, int x, int y,
                 long target) throws Exception {
+        boolean reachable = operation == RailwayTrestleActions.Operation.REMOVE
+                ? RailwayTrestleActions.reachableForRemoval(actor,x,y) : RailwayTrestleActions.reachable(actor,x,y);
         if (!RailwayTrestleActions.ownsTool(actor, Items.getItem(tool), ItemList.dioptra)
-                || !RailwayTrestleActions.reachable(actor, x, y))
+                || !reachable)
             throw new IllegalArgumentException("Carry the dioptra and stand near the survey target.");
         if (operation == RailwayTrestleActions.Operation.OPEN) {
             show(actor, requireDraft(actor), tool, null);
@@ -92,13 +97,13 @@ final class RailwayTrestleSurvey {
             if (operation == RailwayTrestleActions.Operation.START
                     && (rail == null || rail.markerId != target || !api.trackPresent(rail)))
                 throw new IllegalArgumentException("Choose a current railway track marker.");
-            if (operation == RailwayTrestleActions.Operation.REMOVE && (rail == null || rail.markerId != target))
+            if (operation == RailwayTrestleActions.Operation.REMOVE && api.trestleAt(x,y,target) == null)
                 throw new IllegalArgumentException("Choose the trestle track or its ground tile.");
         } else if (operation == RailwayTrestleActions.Operation.MARK || operation == RailwayTrestleActions.Operation.WAYPOINT) {
             throw new IllegalArgumentException("Choose the placed range pole.");
         }
         if (operation == RailwayTrestleActions.Operation.REMOVE) {
-            showRemoval(actor,tool,x,y);
+            showRemoval(actor,tool,x,y,target);
             return;
         }
         if (operation != RailwayTrestleActions.Operation.WAYPOINT) checkEndpoint(actor,x,y,rail);
@@ -147,6 +152,8 @@ final class RailwayTrestleSurvey {
     }
 
     private void checkEndpoint(Creature actor, int x, int y, Node rail) {
+        if (api.hasDeck(x,y))
+            throw new IllegalArgumentException("Choose a ground approach outside an existing trestle deck.");
         String issue = WurmRailWorld.validateTile(x, y, 0);
         if (issue != null) throw new IllegalArgumentException("Survey endpoint at " + x + ", " + y + ". " + issue);
         if (RailwayBridgeDeck.partAt(x, y, 0) != null)
@@ -163,9 +170,9 @@ final class RailwayTrestleSurvey {
         return draft;
     }
 
-    private void showRemoval(Creature actor, long tool, int x, int y) {
+    private void showRemoval(Creature actor, long tool, int x, int y,long marker) {
         if (actor.getPower() < 2) throw new IllegalArgumentException("Removing a trestle requires GM power 2.");
-        String span = api.trestleAt(x,y);
+        String span = api.trestleAt(x,y,marker);
         if (span == null) throw new IllegalArgumentException("Choose a tile belonging to one registered trestle.");
         StringBuilder content = new StringBuilder();
         line(content,"Remove " + span + " at " + x + ", " + y + "?",255,195,140);
@@ -185,9 +192,9 @@ final class RailwayTrestleSurvey {
                         || !"true".equals(answers.getProperty("remove"))) return;
                 api.submit(actor,() -> {
                     if (!RailwayTrestleActions.ownsTool(actor,Items.getItem(tool),ItemList.dioptra)
-                            || !RailwayTrestleActions.reachable(actor,x,y))
+                            || !RailwayTrestleActions.reachableForRemoval(actor,x,y))
                         throw new IllegalArgumentException("Carry the dioptra and stand near the trestle tile.");
-                    if (!span.equals(api.trestleAt(x,y)))
+                    if (!span.equals(api.trestleAt(x,y,marker)))
                         throw new IllegalArgumentException("The registered trestle changed. Select the tile again.");
                     api.remove(actor,span);
                     actor.getCommunicator().sendNormalServerMessage("Removed trestle " + span + ".");
@@ -201,6 +208,7 @@ final class RailwayTrestleSurvey {
         StringBuilder body = new StringBuilder();
         line(body, "Start " + draft.start.label(), 240, 240, 240);
         TrestleAlignment horizontal = null, profile = null;
+        RadiusFailure turn = null;
         Plan plan = null;
         String supportDetails = "";
         if (draft.end != null) {
@@ -210,6 +218,9 @@ final class RailwayTrestleSurvey {
                 profile = profile(draft, horizontal);
                 plan = plan(actor, draft, profile);
                 profile = plan.alignment;
+            } catch (RadiusFailure tight) {
+                turn = tight;
+                line(body, tight.getMessage(), 255, 155, 145);
             } catch (IllegalArgumentException invalid) {
                 line(body, invalid.getMessage(), 255, 155, 145);
             }
@@ -230,7 +241,12 @@ final class RailwayTrestleSurvey {
         } else if (!draft.waypoints.isEmpty()) button(body, "preview", "Apply elevations");
         button(body, "cancel", "Cancel survey");
         body.append("};");
-        if (draft.end != null) map(body, draft, horizontal);
+        if (draft.end != null) {
+            map(body, draft, horizontal, turn);
+            line(body, String.format(Locale.ROOT, "Minimum curve radius %.0f tiles (%.0f m)",
+                    curveRadius / TrestleAlignment.TILE, curveRadius), 190, 200, 205);
+            if (turn != null) showTurnAdvice(body, draft, turn);
+        }
         showElevations(body, draft, plan == null ? null : profile);
         body.append(supportDetails);
         String content = body.toString();
@@ -403,7 +419,9 @@ final class RailwayTrestleSurvey {
         }
         for (GroundCheck check : ground) check.requireClear(fitted);
         validateApproaches(draft.start,draft.end,fitted);
-        return new Plan(draft.start,draft.end,fitted,supportSpacing,curvedTiles.size(),fitted != alignment);
+        Plan plan = new Plan(draft.start,draft.end,fitted,supportSpacing,curvedTiles.size(),fitted != alignment);
+        api.validateCrossings(plan);
+        return plan;
     }
 
     static void validateApproaches(Site start, Site end, TrestleAlignment alignment) {
@@ -557,7 +575,7 @@ final class RailwayTrestleSurvey {
         byte type = Tiles.decodeType(Server.surfaceMesh.getTile(x,y));
         if (type == Tiles.Tile.TILE_HOLE.id || type == Tiles.Tile.TILE_LAVA.id || Tiles.isTree(type) || Tiles.isBush(type))
             throw new IllegalArgumentException("Clear vegetation and avoid cave mouths and lava at " + x + ", " + y + ".");
-        if (RailwayBridgeDeck.partAt(x, y, 0) != null || api.railAt(x, y) != null
+        if (RailwayBridgeDeck.partAt(x, y, 0) != null
                 || tile != null && (tile.getStructure() != null || tile.getFences().length > 0))
             throw new IllegalArgumentException("Existing infrastructure conflicts with the survey at " + x + ", " + y + ".");
         if (actor.getPower() < 2 && !Methods.isActionAllowed(actor, Actions.BUILD, true, x, y, 0, 0))
@@ -593,21 +611,42 @@ final class RailwayTrestleSurvey {
                 .append(site.point.z).append("\"};");
     }
 
-    private static void map(StringBuilder body, Draft draft, TrestleAlignment alignment) {
+    private static void map(StringBuilder body, Draft draft, TrestleAlignment alignment, RadiusFailure issue) {
         List<Point> marks = new ArrayList<>();
         marks.add(draft.start.point);
         for (Waypoint pole : draft.waypoints) marks.add(pole.point);
         marks.add(draft.end.point);
-        body.append("label{text=\"Route map requires the WurmRail client update\";trestlemap=\"")
-                .append(TrestleSurveyMap.encode(marks, alignment, draft.zoom, draft.focus)).append("\"};");
-        body.append("harray{dropdown{id=\"mapFocus\";default=\"").append(draft.focus)
+        int focus = issue == null && draft.focus > marks.size() ? 0 : draft.focus;
+        body.append("label{text=\"Route map requires the WurmRail client update\";");
+        TrestleSurveyMap.appendPayload(body, marks, alignment, draft.zoom, focus, issue);
+        body.append("};");
+        body.append("harray{dropdown{id=\"mapFocus\";default=\"").append(focus)
                 .append("\";options=\"Route centre,Start");
         for (int i = 1; i <= draft.waypoints.size(); i++) body.append(",Pole ").append(i);
-        body.append(",Destination\"};");
+        body.append(",Destination");
+        if (issue != null) body.append(",Tight turn");
+        body.append("\"};");
+        if (issue != null) button(body, "zoomIssue", "Zoom to tight turn");
         if (draft.zoom > 0) button(body, "zoomOut", "Zoom out");
         if (draft.zoom < TrestleSurveyMap.MAX_ZOOM) button(body, "zoomIn", "Zoom in");
         button(body, "zoomFit", "Fit map");
         body.append("};");
+    }
+
+    private void showTurnAdvice(StringBuilder body, Draft draft, RadiusFailure issue) {
+        Point p = issue.tightest;
+        String radius = issue.sampledRadius < curveRadius
+                ? String.format(Locale.ROOT, " | Fitted radius about %.1f m", issue.sampledRadius) : "";
+        line(body, "Tightest sampled point near tile " + (int)Math.floor(p.x / TrestleAlignment.TILE)
+                + ", " + (int)Math.floor(p.y / TrestleAlignment.TILE) + radius, 255, 155, 145);
+        if (issue.section == 0 || issue.section == draft.waypoints.size()) {
+            line(body, "Align the nearby pole with the approach heading. If the curve still bends too soon, move the pole farther along that line.", 240, 240, 240);
+        } else {
+            line(body, "Move a pole toward the outside of the bend or add a pole there to guide a wider turn. Line up the last pole with the destination for a straight approach.", 240, 240, 240);
+        }
+        line(body, "Re-mark moved poles in route order. A 180-degree turn needs about "
+                + Math.round(2 * curveRadius / TrestleAlignment.TILE)
+                + " tiles between track centerlines, plus room for the deck edges.", 190, 200, 205);
     }
 
     private static int lastPage(int poles) {
@@ -714,10 +753,14 @@ final class RailwayTrestleSurvey {
             if (end != null && answers.getProperty("mapFocus") != null) {
                 try {
                     nextFocus = Integer.parseInt(answers.getProperty("mapFocus"));
-                    if (nextFocus < 0 || nextFocus > poles.size()+2) throw new NumberFormatException();
+                    if (nextFocus < 0 || nextFocus > poles.size()+3) throw new NumberFormatException();
                 } catch (NumberFormatException invalid) {
                     throw new IllegalArgumentException("Choose an available map point.");
                 }
+            }
+            if ("true".equals(answers.getProperty("zoomIssue"))) {
+                nextZoom = Math.max(2, zoom);
+                nextFocus = poles.size()+3;
             }
             if ("true".equals(answers.getProperty("zoomFit"))) {
                 nextZoom = 0;

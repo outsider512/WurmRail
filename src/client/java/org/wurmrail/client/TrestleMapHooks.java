@@ -15,7 +15,8 @@ public final class TrestleMapHooks {
                 + " this.wurmRailMap.render($1,this.text,this.x,this.y,this.width,this.height); return; } }");
         CtClass bml = pool.get("com.wurmonline.client.renderer.gui.BmlWindowComponent");
         bml.getDeclaredMethod("parse2").insertBefore("{ if(\"label\".equals($1.getTagName()) && $1.hasAttribute(\"trestlemap\")) {"
-                + " org.wurmrail.client.ClientTrestleMap map=org.wurmrail.client.ClientTrestleMap.decode($1.getAttribute(\"trestlemap\"));"
+                + " org.wurmrail.client.ClientTrestleMap map=org.wurmrail.client.ClientTrestleMap.decode("
+                + " $1.getAttribute(\"trestlemap\"),$1.getAttribute(\"trestlemapissue\"));"
                 + " if(map!=null) { com.wurmonline.client.renderer.gui.WurmLabel label="
                 + " new com.wurmonline.client.renderer.gui.WurmLabel(\"\"); label.wurmRailMap=map;"
                 + " label.setSize(512,192); label.sizeFlags=2; return label; } } }");
